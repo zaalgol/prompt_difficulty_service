@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+pydantic
+python-multipart
+lightgbm
+optuna
+catboost
+xgboost
+pytest
+httpx
