@@ -1,8 +1,13 @@
 """Anonymizer service: Presidio engines + per-session consistency vault."""
 import threading
+from collections import OrderedDict
 from typing import Any, Dict, List, Optional
 
-from app.config import PRESIDIO_NLP_MODEL, PRESIDIO_SCORE_THRESHOLD
+from app.config import (
+    PRESIDIO_MAX_SESSIONS,
+    PRESIDIO_NLP_MODEL,
+    PRESIDIO_SCORE_THRESHOLD,
+)
 from app.logging_config import get_logger
 from app.presidio_service.operators import ConsistentFakerAnonymizer
 from app.presidio_service.semantics import infer_required_entity_types
@@ -22,11 +27,17 @@ class SessionVault:
     The original PII lives here, in process memory only. It is never returned to
     callers or written to logs. Access is guarded by a lock because FastAPI runs
     sync endpoints in a threadpool, so several requests may touch the vault at once.
+
+    The number of retained sessions is bounded (LRU): the least-recently-used
+    session is evicted once max_sessions is exceeded, so a stream of distinct
+    caller-controlled session ids cannot exhaust memory. Sessions are still
+    process-local and cleared on restart (an MVP constraint, documented).
     """
 
-    def __init__(self) -> None:
+    def __init__(self, max_sessions: int = PRESIDIO_MAX_SESSIONS) -> None:
         self._lock = threading.Lock()
-        self._sessions: Dict[str, Dict[str, Dict[str, str]]] = {}
+        self._max_sessions = max(1, max_sessions)
+        self._sessions: "OrderedDict[str, Dict[str, Dict[str, str]]]" = OrderedDict()
 
     def mapping_for(self, session_id: Optional[str]) -> Dict[str, Dict[str, str]]:
         key = session_id or _NO_SESSION
@@ -34,7 +45,14 @@ class SessionVault:
             if key == _NO_SESSION:
                 # Fresh mapping each call: no cross-request coherence wanted.
                 return {}
-            return self._sessions.setdefault(key, {})
+            if key in self._sessions:
+                self._sessions.move_to_end(key)  # mark recently used
+                return self._sessions[key]
+            mapping: Dict[str, Dict[str, str]] = {}
+            self._sessions[key] = mapping
+            if len(self._sessions) > self._max_sessions:
+                self._sessions.popitem(last=False)  # evict least-recently-used
+            return mapping
 
 
 class AnonymizerService:
@@ -50,6 +68,20 @@ class AnonymizerService:
         self._lock = threading.Lock()
         self._analyzer = None
         self._anonymizer = None
+
+    @property
+    def engines_loaded(self) -> bool:
+        """Whether the spaCy/Presidio engines are loaded (no side effects)."""
+        return self._analyzer is not None and self._anonymizer is not None
+
+    def status(self) -> Dict[str, Any]:
+        """Readiness detail for /health (does not trigger a load)."""
+        return {"engines_loaded": self.engines_loaded, "nlp_model": PRESIDIO_NLP_MODEL}
+
+    def warmup(self) -> None:
+        """Eagerly load the engines (e.g. at startup) so the first request is fast
+        and readiness reflects that anonymization can actually run."""
+        self._ensure_engines()
 
     def _ensure_engines(self) -> None:
         if self._analyzer is not None and self._anonymizer is not None:

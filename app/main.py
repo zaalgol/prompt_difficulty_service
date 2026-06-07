@@ -5,7 +5,13 @@ from typing import Any, Dict, Optional
 
 from fastapi import FastAPI, HTTPException, Request
 
-from app.config import DEFAULT_MODEL_PATH, MODEL_VERSION, PROJECT_ROOT, SERVICE_CONFIG_PATH
+from app.config import (
+    DEFAULT_MODEL_PATH,
+    MODEL_VERSION,
+    PRESIDIO_WARM_ON_STARTUP,
+    PROJECT_ROOT,
+    SERVICE_CONFIG_PATH,
+)
 from app.logging_config import get_logger
 from app.modeling import classify_from_artifact, load_model, train_model
 from app.presidio_service import AnonymizerService
@@ -45,8 +51,18 @@ async def lifespan(app: FastAPI):
     app.state.model_path = model_path
     app.state.artifact = artifact
     # Lightweight to construct; the spaCy/Presidio engines load lazily on the
-    # first /anonymize request so startup stays fast.
-    app.state.anonymizer_service = AnonymizerService()
+    # first /anonymize request so startup stays fast. Set presidio_warm_on_startup
+    # to load them now (deployments that must not be "ready" until anonymization
+    # can actually run).
+    anonymizer_service = AnonymizerService()
+    if PRESIDIO_WARM_ON_STARTUP:
+        try:
+            anonymizer_service.warmup()
+        except Exception:
+            # Never block startup on the optional NLP load; /anonymize still
+            # surfaces a clear error and /health reports engines as not loaded.
+            logger.warning("Anonymizer warmup failed; engines will load on first use")
+    app.state.anonymizer_service = anonymizer_service
 
     if artifact:
         version = artifact.get("model_version", "unknown")
@@ -74,6 +90,7 @@ def health(request: Request) -> dict:
     model_path: Path = request.app.state.model_path
     artifact: Optional[dict] = request.app.state.artifact
     model_loaded = artifact is not None
+    anonymizer: AnonymizerService = request.app.state.anonymizer_service
     return {
         # Liveness: the process is up. Readiness: the configured trained model
         # is loaded. When the model is missing the service still answers (rule
@@ -86,6 +103,10 @@ def health(request: Request) -> dict:
         "model_path": str(model_path),
         "model_loaded": model_loaded,
         "model_version": artifact.get("model_version") if model_loaded else None,
+        # Anonymizer engines load lazily by default, so this reflects whether the
+        # NLP model is loaded — not just that the process is up. A deployment that
+        # requires anonymization should gate readiness on engines_loaded.
+        "anonymizer": anonymizer.status(),
     }
 
 
@@ -113,13 +134,16 @@ def anonymize(request: Request, body: AnonymizeRequest) -> AnonymizeResponse:
             auto_preserve=body.auto_preserve,
         )
     except ImportError as exc:
-        # presidio / spaCy not installed (or the NLP model is missing).
-        logger.exception("Anonymization dependencies unavailable")
+        # presidio / spaCy not installed (or the NLP model is missing). Log only
+        # the exception class — not the message/traceback, which can embed prompt
+        # text or paths from deep in the dependency stack.
+        logger.error("Anonymization unavailable (%s)", type(exc).__name__)
         raise HTTPException(
             status_code=503, detail="Anonymization unavailable."
         ) from exc
     except Exception as exc:
-        logger.exception("Anonymization failed")
+        # Same reasoning: a dependency exception message could contain the prompt.
+        logger.error("Anonymization failed (%s)", type(exc).__name__)
         raise HTTPException(status_code=500, detail="Anonymization failed.") from exc
 
     return AnonymizeResponse(**result)

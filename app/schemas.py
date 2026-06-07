@@ -1,5 +1,5 @@
-from typing import Any, Dict, List, Optional
-from pydantic import BaseModel, Field
+from typing import Annotated, Any, Dict, List, Literal, Optional
+from pydantic import BaseModel, Field, StringConstraints
 
 
 class ClassifyRequest(BaseModel):
@@ -25,10 +25,15 @@ class AnonymizeRequest(BaseModel):
     prompt: str = Field(..., min_length=1, max_length=20_000)
     # Scopes the consistency mapping: the same value maps to the same fake value
     # across prompts that share a session_id. Omit for one-shot anonymization.
-    session_id: Optional[str] = None
+    # Bounded so a caller cannot use giant ids to bloat the vault key space.
+    session_id: Optional[str] = Field(default=None, max_length=256)
     # Entity types to keep unchanged because the answer depends on the real value
-    # (e.g. ["DATE_TIME"] for a date of birth in a retirement question).
-    preserve_entity_types: List[str] = Field(default_factory=list)
+    # (e.g. ["DATE_TIME"] for a date of birth in a retirement question). Each entry
+    # must look like a Presidio entity type (UPPER_SNAKE); the list is bounded so a
+    # caller cannot request preservation of an unbounded set.
+    preserve_entity_types: List[
+        Annotated[str, StringConstraints(min_length=1, max_length=64, pattern=r"^[A-Z][A-Z0-9_]*$")]
+    ] = Field(default_factory=list, max_length=32)
     # When true, the service also auto-detects values the answer depends on (e.g.
     # a date of birth when the prompt asks about retirement) and keeps them. Set
     # false to anonymize strictly by preserve_entity_types only.
@@ -39,7 +44,7 @@ class AnonymizedEntity(BaseModel):
     entity_type: str
     start: int
     end: int
-    action: str  # "anonymized" or "preserved"
+    action: Literal["anonymized", "preserved"]
 
 
 class AnonymizeResponse(BaseModel):

@@ -22,7 +22,9 @@ from typing import List
 # retirement, age, countdowns to/from a date, expiry/renewal, anniversaries, etc.
 # Matched case-insensitively against the prompt.
 _DATE_INTENT_PATTERNS = [
-    r"\bretire", r"\bretirement\b", r"\bpension\b",
+    r"\bretire", r"\bretirement\b",
+    r"\b(?:when|what\s+(?:date|age)|how\s+long)\b.*?\bpension\b",
+    r"\bpension\b.*?\b(?:when|what\s+(?:date|age)|start(?:s|ed|ing)?|eligible)\b",
     r"\bhow old\b",
     r"\bwhat age\b",
     r"\b(my|his|her|their|your|the)\s+age\b",
@@ -30,7 +32,9 @@ _DATE_INTENT_PATTERNS = [
     r"\bhow\s+(long|many\s+years|many\s+days|many\s+months|many\s+weeks)\b",
     r"\byears?\s+(until|till|to|old|from\s+now|since|ago)\b",
     r"\banniversary\b",
-    r"\bexpir(?:e|es|ed|ing|y|ation)\b",       # expire(s/d/y) / expiration
+    r"\b(?:when|how\s+long)\b.*?\bexpir(?:e|es|ed|ing|y|ation)\b",
+    r"\bexpir(?:e|es|ed|ing|y|ation)\b.*?\bwhen\b",
+    r"\b(?:expiry|expiration)\s+date\b",
     r"\brenew(?:al|als|ed|ing|s)?\b",          # renew(al/ed) — not "renewable"
     r"\bdue\s+date\b",
     r"\bdeadline\b",

@@ -11,22 +11,51 @@ operator params: because the same dict is reused for every prompt in a session, 
 same original value always resolves to the same fake value — both within a single
 prompt and across prompts.
 """
+import threading
+import unicodedata
 from typing import Callable, Dict
 
 from faker import Faker
 from presidio_anonymizer.operators import Operator, OperatorType
 
+from app.config import PRESIDIO_MAX_ENTRIES_PER_TYPE
+
 # A single Faker instance is reused. It is intentionally NOT seeded: a fixed seed
 # would make every session produce identical fakes, and per-value consistency is
 # already provided by the entity_mapping vault, not by the RNG.
 _fake = Faker()
+_mapping_lock = threading.RLock()
 
-# Maps a Presidio entity type to a Faker generator that produces a plausible
+
+# Replacements for network-/system-addressable types use reserved, non-routable
+# values so the anonymized prompt can never point an LLM (or an agent that acts on
+# its output) at a real host, mailbox, or phone line. See RFC 2606 (example.com /
+# .invalid), RFC 5737 (192.0.2.0/24 documentation IPs), and the NANP 555-01xx
+# fictional-number range.
+def _safe_email() -> str:
+    return f"{_fake.user_name()}@example.com"
+
+
+def _safe_url() -> str:
+    return f"https://example.com/{_fake.uri_path()}"
+
+
+def _safe_ip() -> str:
+    # 192.0.2.0/24 is reserved for documentation and is not routable.
+    return f"192.0.2.{_fake.random_int(min=1, max=254)}"
+
+
+def _safe_phone() -> str:
+    # 555-0100..555-0199 are reserved for fictional use.
+    return f"(555) 555-01{_fake.random_int(min=0, max=99):02d}"
+
+
+# Maps a Presidio entity type to a generator that produces a plausible, *safe*
 # replacement of the same shape. Anything not listed falls back to a generic tag.
 FAKER_BY_TYPE: Dict[str, Callable[[], str]] = {
     "PERSON": _fake.name,
-    "EMAIL_ADDRESS": _fake.email,
-    "PHONE_NUMBER": _fake.phone_number,
+    "EMAIL_ADDRESS": _safe_email,
+    "PHONE_NUMBER": _safe_phone,
     "LOCATION": _fake.city,
     "NRP": _fake.country,
     "ORGANIZATION": _fake.company,
@@ -35,8 +64,8 @@ FAKER_BY_TYPE: Dict[str, Callable[[], str]] = {
     "US_SSN": _fake.ssn,
     "US_DRIVER_LICENSE": _fake.license_plate,
     "US_BANK_NUMBER": _fake.bban,
-    "IP_ADDRESS": _fake.ipv4,
-    "URL": _fake.url,
+    "IP_ADDRESS": _safe_ip,
+    "URL": _safe_url,
     "DATE_TIME": lambda: _fake.date(pattern="%Y-%m-%d"),
 }
 
@@ -46,6 +75,12 @@ def _fake_value(entity_type: str) -> str:
     if generator is None:
         return f"<{entity_type}>"
     return str(generator())
+
+
+def _mapping_key(value: str) -> str:
+    """Normalize equivalent user spellings to one stable vault key."""
+    collapsed = " ".join(value.split())
+    return unicodedata.normalize("NFKC", collapsed).casefold()
 
 
 class ConsistentFakerAnonymizer(Operator):
@@ -63,15 +98,25 @@ class ConsistentFakerAnonymizer(Operator):
         # ("John Smith" vs "john  smith") resolve to one fake. Note: this cannot
         # fix differing NER span boundaries (e.g. "Email John Smith" vs
         # "John Smith"); that is a detection-level concern, not a mapping one.
-        key = " ".join(text.split()).casefold()
+        key = _mapping_key(text)
 
-        mapping_for_type = entity_mapping.setdefault(entity_type, {})
-        if key in mapping_for_type:
-            return mapping_for_type[key]
+        # The mapping is shared by concurrent FastAPI worker threads. Keep the
+        # check/generate/store sequence atomic so two first sightings cannot
+        # assign different pseudonyms to the same original.
+        with _mapping_lock:
+            mapping_for_type = entity_mapping.setdefault(entity_type, {})
+            if key in mapping_for_type:
+                return mapping_for_type[key]
 
-        new_value = self._unique_fake(entity_type, key, mapping_for_type)
-        mapping_for_type[key] = new_value
-        return new_value
+            new_value = self._unique_fake(entity_type, key, mapping_for_type)
+            # Bound per-session memory: drop the oldest mapping for this type once
+            # the cap is reached (dict preserves insertion order). A caller pumping
+            # unique values into one session can no longer grow it without limit;
+            # the trade-off is that very old values may lose coherence.
+            if len(mapping_for_type) >= PRESIDIO_MAX_ENTRIES_PER_TYPE:
+                mapping_for_type.pop(next(iter(mapping_for_type)))
+            mapping_for_type[key] = new_value
+            return new_value
 
     @staticmethod
     def _unique_fake(entity_type: str, key: str, mapping_for_type: Dict[str, str]) -> str:
@@ -82,14 +127,21 @@ class ConsistentFakerAnonymizer(Operator):
         the distinction between them. We also reject a fake equal to the original,
         which would leave the value un-anonymized.
         """
-        used = set(mapping_for_type.values())
+        used = {_mapping_key(value) for value in mapping_for_type.values()}
         for _ in range(10):
             candidate = _fake_value(entity_type)
-            if candidate.casefold() != key and candidate not in used:
+            candidate_key = _mapping_key(candidate)
+            if candidate_key != key and candidate_key not in used:
                 return candidate
-        # Exhausted retries (tiny/duplicated generator pool): disambiguate
-        # deterministically so the result is still distinct.
-        return f"{_fake_value(entity_type)} ({len(mapping_for_type) + 1})"
+        # Never suffix a rejected candidate: it may contain the original value.
+        # Use an opaque deterministic fallback and probe until it is unique.
+        suffix = len(mapping_for_type) + 1
+        while True:
+            candidate = f"<{entity_type}_{suffix}>"
+            candidate_key = _mapping_key(candidate)
+            if candidate_key != key and candidate_key not in used:
+                return candidate
+            suffix += 1
 
     def validate(self, params: Dict = None) -> None:
         params = params or {}

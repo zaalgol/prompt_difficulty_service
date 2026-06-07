@@ -10,10 +10,13 @@ catboost
 xgboost
 pytest
 httpx
-presidio-analyzer
-presidio-anonymizer
-faker
+# Pinned: PII detection/replacement behavior depends on these exact versions, so
+# an unplanned upgrade could silently change what leaks or gets over-redacted.
+presidio-analyzer==2.2.359
+presidio-anonymizer==2.2.362
+faker==40.21.0
+spacy==3.8.13
 # spaCy English NER model for Presidio, pinned so `pip install -r requirements.txt`
 # pulls it with no separate `spacy download` step. The model version (3.8.x) must
-# stay compatible with the installed spaCy minor version; bump both together.
+# stay compatible with the pinned spaCy minor version above; bump both together.
 en_core_web_lg @ https://github.com/explosion/spacy-models/releases/download/en_core_web_lg-3.8.0/en_core_web_lg-3.8.0-py3-none-any.whl

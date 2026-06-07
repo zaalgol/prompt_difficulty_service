@@ -121,6 +121,21 @@ python scripts/classify_prompt.py --prompt "design a scalable auth system"
 Dataset pseudo-labeling is now a CLI step (`scripts/label_dataset.py`), not an HTTP
 endpoint.
 
+Anonymizer notes:
+
+- Replacements for addressable types use **reserved, non-routable** values
+  (`example.com`, `192.0.2.0/24` documentation IPs, `(555) 555-01xx` numbers) so the
+  output can never point a model or agent at a real host, mailbox, or phone line.
+- Session mappings are kept **in process memory only** and are bounded: oldest
+  sessions and oldest per-type entries are evicted under pressure, and they are
+  cleared on restart (single-process scope — not shared across workers/replicas).
+- `/health` reports anonymizer readiness under `anonymizer.engines_loaded`. Engines
+  load lazily on first `/anonymize`; set `"presidio_warm_on_startup": true` in
+  `service_config.json` to load them at startup instead.
+
+Tunable in `service_config.json`: `presidio_nlp_model`, `presidio_score_threshold`,
+`presidio_max_sessions`, `presidio_max_entries_per_type`, `presidio_warm_on_startup`.
+
 ## Logging
 
 Logs are written to both the terminal and `logs/service.log` (rotating, 5 MB × 5 files).

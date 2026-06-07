@@ -59,3 +59,15 @@ MIN_CHEAP_CONFIDENCE = float(_SERVICE_CONFIG.get("min_cheap_confidence", 0.80))
 # - presidio_score_threshold: minimum detection confidence to act on an entity.
 PRESIDIO_NLP_MODEL = _SERVICE_CONFIG.get("presidio_nlp_model", "en_core_web_lg")
 PRESIDIO_SCORE_THRESHOLD = float(_SERVICE_CONFIG.get("presidio_score_threshold", 0.5))
+
+# Bound the in-memory session vault so a long-lived process (or an abusive caller
+# pumping unique values/session ids) cannot grow memory without limit. Oldest
+# sessions are evicted first; within a session each entity type keeps at most
+# PRESIDIO_MAX_ENTRIES_PER_TYPE original->fake mappings (FIFO eviction).
+PRESIDIO_MAX_SESSIONS = int(_SERVICE_CONFIG.get("presidio_max_sessions", 1000))
+PRESIDIO_MAX_ENTRIES_PER_TYPE = int(_SERVICE_CONFIG.get("presidio_max_entries_per_type", 5000))
+
+# Load the (heavy) spaCy/Presidio engines at startup instead of on first request.
+# Off by default so a classify-only deployment starts fast; turn on where the
+# service must be "ready" only once anonymization can actually run.
+PRESIDIO_WARM_ON_STARTUP = bool(_SERVICE_CONFIG.get("presidio_warm_on_startup", False))
