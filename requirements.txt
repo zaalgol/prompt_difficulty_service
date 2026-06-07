@@ -10,6 +10,11 @@ catboost
 xgboost
 pytest
 httpx
+# Redis backs the /anonymize per-session consistency vault (original->fake
+# mappings). fakeredis provides an in-process Redis for the test suite, so no
+# server is required to run `pytest`.
+redis
+fakeredis
 # Pinned: PII detection/replacement behavior depends on these exact versions, so
 # an unplanned upgrade could silently change what leaks or gets over-redacted.
 presidio-analyzer==2.2.359

@@ -19,8 +19,48 @@ pytest.importorskip("presidio_analyzer")
 pytest.importorskip("presidio_anonymizer")
 pytest.importorskip("faker")
 
+from app.config import REDIS_URL  # noqa: E402
+from app.presidio_service.service import _KEY_PREFIX  # noqa: E402
+
 BASE_URL = "http://127.0.0.1:8766"
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+# The server subprocess shares this venv but NOT the in-process fakeredis patch, so
+# cross-session coherence here needs a real Redis at REDIS_URL. Ephemeral requests
+# (no session_id) never touch Redis, so only the session-based tests require it.
+_E2E_SESSION_PREFIX = "e2e-"
+
+
+def _real_redis():
+    """Return a connected redis client for REDIS_URL, or None if unreachable."""
+    try:
+        import redis
+
+        client = redis.from_url(REDIS_URL, decode_responses=True, socket_connect_timeout=0.5)
+        client.ping()
+        return client
+    except Exception:
+        return None
+
+
+@pytest.fixture(scope="module")
+def redis_or_skip():
+    client = _real_redis()
+    if client is None:
+        pytest.skip(f"no Redis reachable at {REDIS_URL}; session-coherence tests need it")
+    return client
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _cleanup_e2e_sessions():
+    """Delete this module's session keys afterward so reruns have no side effects."""
+    yield
+    client = _real_redis()
+    if client is None:
+        return
+    keys = list(client.scan_iter(match=f"{_KEY_PREFIX}{_E2E_SESSION_PREFIX}*"))
+    if keys:
+        client.delete(*keys)
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -108,7 +148,7 @@ def test_coherence_within_a_single_prompt():
     assert len(persons) == 2
 
 
-def test_coherence_across_requests_same_session():
+def test_coherence_across_requests_same_session(redis_or_skip):
     session = "e2e-session-coherence"
     r1 = anonymize("Please email John Smith.", session_id=session)
     r2 = anonymize("Did John Smith reply yet?", session_id=session)
@@ -118,7 +158,7 @@ def test_coherence_across_requests_same_session():
     assert fake_name in r2.json()["anonymized_prompt"]
 
 
-def test_different_sessions_are_isolated():
+def test_different_sessions_are_isolated(redis_or_skip):
     r1 = anonymize("Please email John Smith.", session_id="e2e-sess-a")
     r2 = anonymize("Please email John Smith.", session_id="e2e-sess-b")
     # Both anonymize the name; mappings are per-session (values may differ).

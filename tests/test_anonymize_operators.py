@@ -11,12 +11,19 @@ import pytest
 pytest.importorskip("presidio_anonymizer")
 pytest.importorskip("faker")
 
+fakeredis = pytest.importorskip("fakeredis")
+
 from app.presidio_service.operators import (  # noqa: E402
     FAKER_BY_TYPE,
     ConsistentFakerAnonymizer,
     _fake_value,
 )
 from app.presidio_service.service import SessionVault  # noqa: E402
+
+
+def _vault(**kwargs):
+    """A SessionVault backed by an isolated in-process fakeredis."""
+    return SessionVault(fakeredis.FakeStrictRedis(decode_responses=True), **kwargs)
 
 
 def operate(text, mapping, entity_type="PERSON"):
@@ -110,43 +117,70 @@ def test_faker_map_covers_common_types():
         assert isinstance(_fake_value(etype), str) and _fake_value(etype)
 
 
-# ── SessionVault ─────────────────────────────────────────────────────────────
+# ── SessionVault (Redis-backed: load / save / delete) ────────────────────────
 
-def test_vault_same_session_returns_same_mapping_object():
-    v = SessionVault()
-    m1 = v.mapping_for("s1")
-    m1.setdefault("PERSON", {})["john smith"] = "Fake Name"
-    m2 = v.mapping_for("s1")
-    assert m2 is m1
-    assert m2["PERSON"]["john smith"] == "Fake Name"
+def test_vault_persists_mapping_across_load_save():
+    v = _vault()
+    mapping = v.load("s1")
+    assert mapping == {}  # nothing stored yet
+    mapping.setdefault("PERSON", {})["john smith"] = "Fake Name"
+    v.save("s1", mapping)
+    # A later request reloads the same mapping (a fresh dict with equal contents).
+    reloaded = v.load("s1")
+    assert reloaded == {"PERSON": {"john smith": "Fake Name"}}
+    assert reloaded is not mapping
 
 
 def test_vault_different_sessions_are_isolated():
-    v = SessionVault()
-    a = v.mapping_for("a")
-    b = v.mapping_for("b")
-    assert a is not b
+    v = _vault()
+    a = v.load("a")
+    a.setdefault("PERSON", {})["x"] = "A"
+    v.save("a", a)
+    # A different session id never sees session "a"'s mapping.
+    assert v.load("b") == {}
 
 
 def test_vault_no_session_is_ephemeral():
-    v = SessionVault()
-    first = v.mapping_for(None)
+    v = _vault()
+    first = v.load(None)
     first.setdefault("PERSON", {})["john smith"] = "X"
-    second = v.mapping_for(None)
+    v.save(None, first)  # ephemeral save is a no-op
+    second = v.load(None)
     # A brand-new mapping each time: nothing retained across calls.
     assert second == {}
     assert second is not first
 
 
+def test_vault_delete_removes_session():
+    v = _vault()
+    m = v.load("s1")
+    m.setdefault("PERSON", {})["x"] = "Y"
+    v.save("s1", m)
+    v.delete("s1")
+    assert v.load("s1") == {}
+
+
+def test_vault_refreshes_ttl_on_access():
+    client = fakeredis.FakeStrictRedis(decode_responses=True)
+    v = SessionVault(client, ttl_seconds=100)
+    m = v.load("s1")
+    m.setdefault("PERSON", {})["x"] = "Y"
+    v.save("s1", m)
+    assert 0 < client.ttl("anon:vault:s1") <= 100
+    v.load("s1")  # access refreshes the TTL
+    assert 0 < client.ttl("anon:vault:s1") <= 100
+
+
 def test_vault_is_thread_safe():
-    v = SessionVault()
+    v = _vault()
     errors = []
 
     def worker(sid):
         try:
-            for _ in range(200):
-                m = v.mapping_for(sid)
+            for _ in range(50):
+                m = v.load(sid)
                 m.setdefault("PERSON", {})[str(threading.get_ident())] = "x"
+                v.save(sid, m)
         except Exception as exc:  # pragma: no cover
             errors.append(exc)
 

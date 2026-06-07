@@ -56,7 +56,12 @@ realistic fake values (Presidio for detection, Faker for replacement). Two
 guarantees:
 
 - Coherence: the same value maps to the same fake across prompts sharing a
-  `session_id` (in-memory per-session vault; original PII never leaves the process).
+  `session_id`. The per-session vault (original→fake map) is stored in Redis
+  (`REDIS_URL`, default `redis://localhost:6379/0`) with a TTL, so coherence
+  survives across processes/restarts; the original PII lives only in Redis and is
+  never returned or logged. Requests without a `session_id` never touch Redis. If
+  Redis is unreachable, a `session_id` request fails closed with 503. Tests use
+  an in-process `fakeredis` (see `tests/conftest.py`).
 - Semantics: values the answer depends on are kept unchanged. The service
   auto-detects them with a keyword heuristic (`app/presidio_service/semantics.py`)
   — e.g. it keeps `DATE_TIME` when the prompt asks a retirement/age/countdown

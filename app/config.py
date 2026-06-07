@@ -60,11 +60,20 @@ MIN_CHEAP_CONFIDENCE = float(_SERVICE_CONFIG.get("min_cheap_confidence", 0.80))
 PRESIDIO_NLP_MODEL = _SERVICE_CONFIG.get("presidio_nlp_model", "en_core_web_lg")
 PRESIDIO_SCORE_THRESHOLD = float(_SERVICE_CONFIG.get("presidio_score_threshold", 0.5))
 
-# Bound the in-memory session vault so a long-lived process (or an abusive caller
-# pumping unique values/session ids) cannot grow memory without limit. Oldest
-# sessions are evicted first; within a session each entity type keeps at most
-# PRESIDIO_MAX_ENTRIES_PER_TYPE original->fake mappings (FIFO eviction).
-PRESIDIO_MAX_SESSIONS = int(_SERVICE_CONFIG.get("presidio_max_sessions", 1000))
+# The /anonymize per-session vault (original->fake mappings) is stored in Redis
+# so coherence survives across processes and restarts. Connection string comes
+# from the REDIS_URL env var, else service_config.json, else a local default.
+REDIS_URL = os.environ.get("REDIS_URL", _SERVICE_CONFIG.get("redis_url", "redis://localhost:6379/0"))
+# Socket connect/read timeout (seconds) for Redis calls, kept short so a missing
+# backend fails fast (closed) instead of hanging the request or /health.
+REDIS_SOCKET_TIMEOUT = float(_SERVICE_CONFIG.get("redis_socket_timeout", 0.5))
+
+# A session's mappings expire from Redis after this many seconds of inactivity;
+# the TTL is refreshed on every request that touches the session. This bounds
+# memory (replacing the old in-process LRU cap on the number of sessions). Within
+# a session each entity type keeps at most PRESIDIO_MAX_ENTRIES_PER_TYPE
+# original->fake mappings (FIFO eviction, enforced by the operator).
+PRESIDIO_SESSION_TTL_SECONDS = int(_SERVICE_CONFIG.get("presidio_session_ttl_seconds", 3600))
 PRESIDIO_MAX_ENTRIES_PER_TYPE = int(_SERVICE_CONFIG.get("presidio_max_entries_per_type", 5000))
 
 # Load the (heavy) spaCy/Presidio engines at startup instead of on first request.

@@ -1,7 +1,7 @@
 """Tests for the privacy/robustness hardening added from the review:
 
 - replacements use reserved, non-routable values (cannot target real systems);
-- the session vault is bounded (LRU sessions, capped entries per type);
+- the session vault is bounded (per-session Redis TTL, capped entries per type);
 - request validation bounds session_id and preserve_entity_types;
 - /health reports anonymizer readiness without forcing a load.
 
@@ -15,9 +15,14 @@ from fastapi.testclient import TestClient
 
 pytest.importorskip("presidio_anonymizer")
 pytest.importorskip("faker")
+fakeredis = pytest.importorskip("fakeredis")
 
 from app.presidio_service.operators import ConsistentFakerAnonymizer  # noqa: E402
 from app.presidio_service.service import SessionVault  # noqa: E402
+
+
+def _vault(**kwargs):
+    return SessionVault(fakeredis.FakeStrictRedis(decode_responses=True), **kwargs)
 
 
 def _operate(text, mapping, entity_type):
@@ -58,24 +63,27 @@ def test_safe_replacements_are_still_coherent_and_distinct():
     assert a1 != b           # distinctness preserved
 
 
-# ── bounded session vault ────────────────────────────────────────────────────
+# ── bounded session vault (Redis TTL) ────────────────────────────────────────
 
-def test_vault_evicts_least_recently_used_session():
-    v = SessionVault(max_sessions=2)
-    v.mapping_for("a").setdefault("PERSON", {})["x"] = "y"
-    v.mapping_for("b")
-    v.mapping_for("c")  # exceeds cap -> "a" (LRU) evicted
-    assert v.mapping_for("a") == {}  # came back empty; its stored mapping was dropped
+def test_vault_sets_ttl_so_sessions_expire():
+    # Memory is bounded by a per-session TTL instead of an LRU session cap: every
+    # stored session carries an expiry, so abandoned sessions cannot accumulate.
+    client = fakeredis.FakeStrictRedis(decode_responses=True)
+    v = SessionVault(client, ttl_seconds=60)
+    m = v.load("a")
+    m.setdefault("PERSON", {})["x"] = "y"
+    v.save("a", m)
+    assert 0 < client.ttl("anon:vault:a") <= 60
 
 
-def test_vault_access_refreshes_recency():
-    v = SessionVault(max_sessions=2)
-    v.mapping_for("a").setdefault("PERSON", {})["x"] = "y"
-    v.mapping_for("b")
-    v.mapping_for("a")  # touch a -> b becomes LRU
-    v.mapping_for("c")  # evicts b, keeps a
-    assert v.mapping_for("a").get("PERSON") == {"x": "y"}
-    assert v.mapping_for("b") == {}
+def test_vault_expired_session_comes_back_empty():
+    client = fakeredis.FakeStrictRedis(decode_responses=True)
+    v = SessionVault(client, ttl_seconds=60)
+    m = v.load("a")
+    m.setdefault("PERSON", {})["x"] = "y"
+    v.save("a", m)
+    client.delete("anon:vault:a")  # simulate TTL expiry
+    assert v.load("a") == {}
 
 
 def test_per_type_entry_cap_is_enforced(monkeypatch):
@@ -142,11 +150,30 @@ def test_valid_policy_inputs_are_accepted(client):
     assert fake.calls[0]["preserve_entity_types"] == ["DATE_TIME", "EMAIL_ADDRESS"]
 
 
+def test_redis_backend_unavailable_fails_closed_503(client):
+    from app.presidio_service import AnonymizerBackendUnavailable
+
+    class _Down:
+        def anonymize(self, **kwargs):
+            raise AnonymizerBackendUnavailable()
+
+        def status(self):
+            return {"engines_loaded": False, "nlp_model": "test", "redis_connected": False}
+
+    client.app.state.anonymizer_service = _Down()
+    response = client.post("/anonymize", json={"prompt": "Contact John Smith.", "session_id": "s"})
+    assert response.status_code == 503
+    # The error must not leak prompt text.
+    assert "John Smith" not in response.text
+
+
 # ── health readiness ─────────────────────────────────────────────────────────
 
 def test_health_reports_anonymizer_status(client):
     data = client.get("/health").json()
     assert "anonymizer" in data
-    assert set(data["anonymizer"]) == {"engines_loaded", "nlp_model"}
+    assert set(data["anonymizer"]) == {"engines_loaded", "nlp_model", "redis_connected"}
     # Lazy by default: engines are not loaded just because the process is up.
     assert data["anonymizer"]["engines_loaded"] is False
+    # Vault backend reachability is reported (fakeredis is up under tests).
+    assert data["anonymizer"]["redis_connected"] is True

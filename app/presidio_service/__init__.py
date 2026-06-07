@@ -8,6 +8,9 @@ values before the prompt is forwarded to an LLM. Two properties are guaranteed:
 - Semantics: entity types the caller marks as required for the answer are kept
   unchanged (Presidio's "keep" operator).
 """
-from app.presidio_service.service import AnonymizerService
+from app.presidio_service.service import (
+    AnonymizerBackendUnavailable,
+    AnonymizerService,
+)
 
-__all__ = ["AnonymizerService"]
+__all__ = ["AnonymizerService", "AnonymizerBackendUnavailable"]

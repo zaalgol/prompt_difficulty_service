@@ -14,7 +14,7 @@ from app.config import (
 )
 from app.logging_config import get_logger
 from app.modeling import classify_from_artifact, load_model, train_model
-from app.presidio_service import AnonymizerService
+from app.presidio_service import AnonymizerBackendUnavailable, AnonymizerService
 from app.schemas import (
     AnonymizeRequest,
     AnonymizeResponse,
@@ -135,6 +135,13 @@ def anonymize(request: Request, body: AnonymizeRequest) -> AnonymizeResponse:
             preserve_entity_types=body.preserve_entity_types,
             auto_preserve=body.auto_preserve,
         )
+    except AnonymizerBackendUnavailable as exc:
+        # Redis vault unreachable: fail closed so cross-request coherence is never
+        # silently lost. No prompt text is in this exception.
+        logger.error("Anonymization backend unavailable")
+        raise HTTPException(
+            status_code=503, detail="Anonymization backend unavailable."
+        ) from exc
     except ImportError as exc:
         # presidio / spaCy not installed (or the NLP model is missing). Log only
         # the exception class — not the message/traceback, which can embed prompt
