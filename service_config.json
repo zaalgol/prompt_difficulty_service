@@ -1,4 +1,6 @@
 {
   "model_path": "models/prompt_classifier_ensemble_embeddings.joblib",
-  "log_level": "INFO"
+  "log_level": "INFO",
+  "min_cheap_confidence": 0.8,
+  "embedding_model": "text-embedding-3-small"
 }

@@ -38,13 +38,16 @@ DEFAULT_LGBM_EMBEDDING_OPTUNA_MODEL_PATH = MODELS_DIR / "prompt_classifier_lgbm_
 DEFAULT_ENSEMBLE_EMBEDDING_MODEL_PATH = MODELS_DIR / "prompt_classifier_ensemble_embeddings.joblib"
 DEFAULT_EMBEDDING_CACHE_PATH = DATA_DIR / "embeddings_cache.pkl"
 
-EMBEDDING_MODEL = "text-embedding-3-small"
+# Embedding model used when training embedding-based variants. Override with
+# "embedding_model" in service_config.json.
+EMBEDDING_MODEL = _SERVICE_CONFIG.get("embedding_model", "text-embedding-3-small")
 
 LABEL_CHEAP_OK = "cheap_ok"
 LABEL_ESCALATE = "escalate"
 
 MODEL_VERSION = "mvp-v1"
 
-# Conservative default.
-# If classifier confidence is lower than this threshold, route to escalate.
-MIN_CHEAP_CONFIDENCE = 0.80
+# Conservative default: if a cheap_ok prediction's confidence is below this
+# threshold, route to escalate instead. Override with "min_cheap_confidence"
+# in service_config.json.
+MIN_CHEAP_CONFIDENCE = float(_SERVICE_CONFIG.get("min_cheap_confidence", 0.80))

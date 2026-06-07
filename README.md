@@ -29,7 +29,7 @@ pip install -r requirements.txt
 ## Run API
 
 ```bash
-uvicorn app.main:app --reload --port 8080
+uvicorn app.main:app --reload --port 8081
 ```
 
 ## Run tests
@@ -46,10 +46,10 @@ python scripts/label_dataset.py --input data/report.json --output data/report_la
 
 ## Train a model from CLI
 
-Default (TF-IDF + LogReg baseline):
+Default (Embeddings + LightGBM):
 
 ```bash
-python scripts/train_model.py --input data/report_labeled_binary.json
+python scripts/train_model.py --input data/report_labeled_binary.json --use-lgbm-embeddings
 ```
 
 Active model (Embeddings + Ensemble — LGBM, XGBoost, CatBoost):
@@ -78,22 +78,18 @@ Embedding variants require `OPENAI_API_KEY` to be set.
 
 ## Classify a prompt
 
-Windows (PowerShell):
+Windows (PowerShell) — single line (backticks must be the last character on a
+line, so the paste-safe form is to keep it on one line):
 
 ```powershell
-Invoke-RestMethod `
-  -Uri "http://localhost:8080/classify" `
-  -Method Post `
-  -ContentType "application/json" `
-  -Body '{"prompt":"Refactor the authentication flow and explain the security tradeoffs"}'
+Invoke-RestMethod -Uri "http://localhost:8081/classify" -Method Post -ContentType "application/json" -Body '{"prompt":"Refactor the authentication flow and explain the security tradeoffs"}'
 ```
 
-Linux / macOS (curl):
+Linux / macOS (curl) — `\` is a bash line-continuation; in PowerShell use the
+Invoke-RestMethod example above instead:
 
 ```bash
-curl -X POST http://localhost:8080/classify \
-  -H "Content-Type: application/json" \
-  -d '{"prompt": "Refactor this authentication flow and explain the tradeoffs"}'
+curl -X POST http://localhost:8081/classify -H "Content-Type: application/json" -d '{"prompt": "Refactor this authentication flow and explain the tradeoffs"}'
 ```
 
 ## Classify from CLI (no server needed)
@@ -125,13 +121,13 @@ Windows (PowerShell):
 
 ```powershell
 $env:LOG_LEVEL = "DEBUG"
-uvicorn app.main:app --reload --port 8080
+uvicorn app.main:app --reload --port 8081
 ```
 
 Linux / macOS:
 
 ```bash
-LOG_LEVEL=DEBUG uvicorn app.main:app --reload --port 8080
+LOG_LEVEL=DEBUG uvicorn app.main:app --reload --port 8081
 ```
 
 ## Active model
