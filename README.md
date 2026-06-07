@@ -112,7 +112,14 @@ python scripts/classify_prompt.py --prompt "design a scalable auth system"
 ## Logging
 
 Logs are written to both the terminal and `logs/service.log` (rotating, 5 MB × 5 files).
-Default level is `INFO`. Override with the `LOG_LEVEL` environment variable:
+Timestamps are in UTC (ISO-8601, e.g. `2026-06-07T06:11:24Z`) so logs are comparable
+across containers regardless of host timezone.
+
+The level can be set two ways, in order of precedence:
+
+1. The `LOG_LEVEL` environment variable (highest priority, for per-deployment tuning).
+2. The `log_level` key in `service_config.json` (committed default).
+3. `INFO` if neither is set.
 
 Windows (PowerShell):
 
@@ -132,7 +139,10 @@ LOG_LEVEL=DEBUG uvicorn app.main:app --reload --port 8080
 The model loaded at startup is set in `service_config.json`:
 
 ```json
-{ "model_path": "models/prompt_classifier_ensemble_embeddings.joblib" }
+{
+  "model_path": "models/prompt_classifier_ensemble_embeddings.joblib",
+  "log_level": "INFO"
+}
 ```
 
 Remove or change this file to switch models. If the file is absent or the path does not exist,

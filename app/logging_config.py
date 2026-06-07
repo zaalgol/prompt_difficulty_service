@@ -6,12 +6,15 @@ that handlers are configured exactly once, regardless of import order or
 uvicorn reloads.
 """
 import logging
+import time
 from logging.handlers import RotatingFileHandler
 
 from app.config import LOG_FILE_PATH, LOG_LEVEL, LOGS_DIR
 
 _LOG_FORMAT = "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
-_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
+# ISO-8601 with a trailing Z; timestamps are UTC (see formatter.converter below)
+# so logs are comparable regardless of the container's host timezone.
+_DATE_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 
 _configured = False
 
@@ -24,6 +27,8 @@ def setup_logging(level: "str | int | None" = None) -> None:
 
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
     formatter = logging.Formatter(_LOG_FORMAT, datefmt=_DATE_FORMAT)
+    # Emit all timestamps in UTC rather than the host's local time.
+    formatter.converter = time.gmtime
 
     console_handler = logging.StreamHandler()
     console_handler.setFormatter(formatter)

@@ -1,3 +1,4 @@
 {
-  "model_path": "models/prompt_classifier_ensemble_embeddings.joblib"
+  "model_path": "models/prompt_classifier_ensemble_embeddings.joblib",
+  "log_level": "INFO"
 }

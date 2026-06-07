@@ -1,11 +1,13 @@
 .claude/settings.local.json
 .dev
+.venv/
+.env
+.pytest_cache/
+
 data
 models
 logs
 catboost_info/
-.venv/
-.env
-.pytest_cache/
+
 **/*.pyc
 __pycache__/
