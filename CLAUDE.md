@@ -45,8 +45,27 @@ app/modeling.py        training and inference, all model variants
 app/main.py            FastAPI endpoints
 app/schemas.py         Pydantic models
 app/ml.py              pure-Python ML utilities (TF-IDF, LogReg, etc.)
+app/presidio_service/  PII anonymization for /anonymize (Presidio + Faker)
 service_config.json    runtime override for model_path
 ```
+
+## /anonymize endpoint
+
+`POST /anonymize` takes a single prompt and returns it with PII replaced by
+realistic fake values (Presidio for detection, Faker for replacement). Two
+guarantees:
+
+- Coherence: the same value maps to the same fake across prompts sharing a
+  `session_id` (in-memory per-session vault; original PII never leaves the process).
+- Semantics: values the answer depends on are kept unchanged. The service
+  auto-detects them with a keyword heuristic (`app/presidio_service/semantics.py`)
+  — e.g. it keeps `DATE_TIME` when the prompt asks a retirement/age/countdown
+  question — and the caller can also force types via `preserve_entity_types`.
+  Auto-detection only ever adds preservation; disable it per request with
+  `auto_preserve: false`.
+
+Dataset pseudo-labeling is CLI-only (`scripts/label_dataset.py`); it is no longer
+an HTTP endpoint.
 
 Original dataset path:
 

@@ -51,3 +51,11 @@ MODEL_VERSION = "mvp-v1"
 # threshold, route to escalate instead. Override with "min_cheap_confidence"
 # in service_config.json.
 MIN_CHEAP_CONFIDENCE = float(_SERVICE_CONFIG.get("min_cheap_confidence", 0.80))
+
+# Presidio PII anonymization (/anonymize endpoint).
+# - presidio_nlp_model: spaCy model the analyzer loads for English NER. The large
+#   model (en_core_web_lg) is Presidio's default and the most accurate; en_core_web_sm
+#   is lighter. Whatever is set here must be downloaded (`spacy download <model>`).
+# - presidio_score_threshold: minimum detection confidence to act on an entity.
+PRESIDIO_NLP_MODEL = _SERVICE_CONFIG.get("presidio_nlp_model", "en_core_web_lg")
+PRESIDIO_SCORE_THRESHOLD = float(_SERVICE_CONFIG.get("presidio_score_threshold", 0.5))

@@ -48,7 +48,7 @@ Change this file to switch models without code changes.
 ## Run API
 
 ```powershell
-uvicorn app.main:app --reload --port 8080
+uvicorn app.main:app --reload --port 8081
 ```
 
 ## Run tests
@@ -60,14 +60,14 @@ pytest
 ## Health check
 
 ```powershell
-Invoke-RestMethod -Uri "http://localhost:8080/health"
+Invoke-RestMethod -Uri "http://localhost:8081/health"
 ```
 
 ## Classify one prompt via API
 
 ```powershell
 Invoke-RestMethod `
-  -Uri "http://localhost:8080/classify" `
+  -Uri "http://localhost:8081/classify" `
   -Method Post `
   -ContentType "application/json" `
   -Body '{"prompt":"Refactor the authentication flow and explain the security tradeoffs"}'
@@ -93,6 +93,26 @@ python scripts/classify_prompt.py --prompt "design a scalable auth system"
 ```
 
 If no trained model exists, `/classify` uses rule-based fallback (`method: "rule_based_fallback"`).
+
+## Anonymize a prompt via API
+
+`/anonymize` detects PII and replaces it with realistic, consistent fakes before a
+prompt is sent to an LLM (Presidio + Faker; see `app/presidio_service/`). Requires a
+spaCy model — pinned in `requirements.txt`, so `pip install` covers it.
+
+```powershell
+Invoke-RestMethod `
+  -Uri "http://localhost:8081/anonymize" `
+  -Method Post `
+  -ContentType "application/json" `
+  -Body '{"prompt":"I am John Smith, born 1960-04-12. When do I retire at 67?","session_id":"s1"}'
+```
+
+- `session_id` (optional): same value -> same fake across prompts in that session.
+- `preserve_entity_types` (optional): force entity types to be kept unchanged.
+- `auto_preserve` (default true): also auto-keep values the answer depends on
+  (e.g. DATE_TIME for retirement/age questions). The example above keeps
+  `1960-04-12` while anonymizing the name.
 
 ## Logging
 

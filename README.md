@@ -26,6 +26,13 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
+The `/anonymize` endpoint uses a spaCy English model for Presidio's NER. It is
+pinned in `requirements.txt`, so the `pip install` above already includes it — no
+separate `spacy download` step is needed.
+
+To use a smaller model instead, run `python -m spacy download en_core_web_sm` and
+set `"presidio_nlp_model": "en_core_web_sm"` in `service_config.json`.
+
 ## Run API
 
 ```bash
@@ -102,8 +109,17 @@ python scripts/classify_prompt.py --prompt "design a scalable auth system"
 
 - `GET /health`
 - `POST /classify`
-- `POST /label-dataset`
+- `POST /anonymize` — detect PII in a prompt and replace it with realistic, fake
+  values before forwarding it to an LLM. Replacements are consistent across prompts
+  that share a `session_id`. Values the answer depends on are kept unchanged so the
+  result stays correct: the service auto-detects them (e.g. it keeps a date of birth
+  when the prompt asks about retirement/age) and the caller can also force types via
+  `preserve_entity_types`. Set `"auto_preserve": false` to disable auto-detection.
+  Requires Presidio plus a spaCy model — see Install.
 - `POST /train`
+
+Dataset pseudo-labeling is now a CLI step (`scripts/label_dataset.py`), not an HTTP
+endpoint.
 
 ## Logging
 

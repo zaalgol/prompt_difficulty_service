@@ -24,6 +24,7 @@ app/labeling.py        rule-based pseudo-labeler
 app/dataset.py         JSON load/save/labeling
 app/modeling.py        training and inference (all model variants)
 app/ml.py              pure-Python ML utilities (TF-IDF, LogReg, etc.)
+app/presidio_service/  PII anonymization for /anonymize (Presidio + Faker)
 app/config.py          paths, constants, LOG_LEVEL
 app/logging_config.py  central logging setup — use get_logger(__name__) in every module
 scripts/               CLI wrappers

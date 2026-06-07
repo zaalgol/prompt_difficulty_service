@@ -1,20 +1,19 @@
 import json
-import os
 from contextlib import asynccontextmanager
 from pathlib import Path
-from tempfile import NamedTemporaryFile
 from typing import Any, Dict, Optional
 
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import FastAPI, HTTPException, Request
 
 from app.config import DEFAULT_MODEL_PATH, MODEL_VERSION, PROJECT_ROOT, SERVICE_CONFIG_PATH
-from app.dataset import label_dataset
 from app.logging_config import get_logger
 from app.modeling import classify_from_artifact, load_model, train_model
+from app.presidio_service import AnonymizerService
 from app.schemas import (
+    AnonymizeRequest,
+    AnonymizeResponse,
     ClassifyRequest,
     ClassifyResponse,
-    LabelDatasetResponse,
     TrainRequest,
     TrainResponse,
 )
@@ -45,6 +44,9 @@ async def lifespan(app: FastAPI):
 
     app.state.model_path = model_path
     app.state.artifact = artifact
+    # Lightweight to construct; the spaCy/Presidio engines load lazily on the
+    # first /anonymize request so startup stays fast.
+    app.state.anonymizer_service = AnonymizerService()
 
     if artifact:
         version = artifact.get("model_version", "unknown")
@@ -94,45 +96,33 @@ def classify(request: Request, body: ClassifyRequest) -> ClassifyResponse:
     return ClassifyResponse(**result)
 
 
-@app.post("/label-dataset", response_model=LabelDatasetResponse)
-async def label_dataset_endpoint(
-    file: UploadFile = File(...),
-) -> LabelDatasetResponse:
-    if not file.filename or not file.filename.endswith(".json"):
-        logger.warning("Rejected upload with invalid filename: %r", file.filename)
-        raise HTTPException(status_code=400, detail="Please upload a .json file.")
+@app.post("/anonymize", response_model=AnonymizeResponse)
+def anonymize(request: Request, body: AnonymizeRequest) -> AnonymizeResponse:
+    """Detect PII in a prompt and replace it with realistic, consistent fakes.
 
-    input_path: Optional[Path] = None
+    Same value -> same fake across prompts sharing a session_id (coherence).
+    Entity types in preserve_entity_types are kept unchanged so the answer stays
+    correct (semantics). The prompt text is never logged.
+    """
+    service: AnonymizerService = request.app.state.anonymizer_service
     try:
-        content = await file.read()
-
-        with NamedTemporaryFile(delete=False, suffix=".json") as tmp:
-            tmp.write(content)
-            input_path = Path(tmp.name)
-
-        output_path = Path("data") / f"{Path(file.filename).stem}_labeled_binary.json"
-
-        logger.info("Labeling dataset from upload '%s'", file.filename)
-        total, counts = label_dataset(input_path, output_path)
-        logger.info("Labeled %d prompts -> %s (counts=%s)", total, output_path, counts)
-
-        return LabelDatasetResponse(
-            total_prompts=total,
-            label_counts=counts,
-            output_path=str(output_path),
+        result = service.anonymize(
+            prompt=body.prompt,
+            session_id=body.session_id,
+            preserve_entity_types=body.preserve_entity_types,
+            auto_preserve=body.auto_preserve,
         )
-
+    except ImportError as exc:
+        # presidio / spaCy not installed (or the NLP model is missing).
+        logger.exception("Anonymization dependencies unavailable")
+        raise HTTPException(
+            status_code=503, detail="Anonymization unavailable."
+        ) from exc
     except Exception as exc:
-        logger.exception("Failed to label dataset from upload '%s'", file.filename)
-        raise HTTPException(status_code=500, detail="Failed to label dataset.") from exc
-    finally:
-        # Always remove the temp upload, including on failure, so prompt history
-        # is not left behind in the system temp directory.
-        if input_path is not None:
-            try:
-                os.unlink(input_path)
-            except OSError:
-                logger.warning("Could not remove temp upload %s", input_path)
+        logger.exception("Anonymization failed")
+        raise HTTPException(status_code=500, detail="Anonymization failed.") from exc
+
+    return AnonymizeResponse(**result)
 
 
 @app.post("/train", response_model=TrainResponse)
