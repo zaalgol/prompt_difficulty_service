@@ -14,6 +14,7 @@ from app.config import (
     DEFAULT_LGBM_MODEL_PATH,
     DEFAULT_MODEL_PATH,
 )
+from app.logging_config import get_logger
 from app.modeling import (
     train_model,
     train_model_embeddings,
@@ -23,6 +24,8 @@ from app.modeling import (
     train_model_lgbm_embeddings_optuna,
     train_model_lgbm_embeddings_tuned,
 )
+
+logger = get_logger("scripts.train_model")
 
 ALL_VARIANTS = [
     ("TF-IDF + LogReg",                         "tfidf_logreg"),
@@ -109,6 +112,8 @@ def main() -> None:
     group.add_argument("--compare",                   action="store_true", help="Train all 7 variants and compare")
 
     args = parser.parse_args()
+
+    logger.info("train_model CLI invoked (input=%s)", args.input)
 
     if args.compare:
         results = {}

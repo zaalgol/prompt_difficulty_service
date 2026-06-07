@@ -4,7 +4,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from app.logging_config import get_logger
 from app.modeling import classify_with_model
+
+logger = get_logger("scripts.classify_prompt")
 
 
 def main() -> None:
@@ -12,6 +15,7 @@ def main() -> None:
     parser.add_argument("--prompt", required=True)
     args = parser.parse_args()
 
+    logger.info("Classifying prompt (%d chars) from CLI", len(args.prompt))
     result = classify_with_model(args.prompt)
 
     print(result)

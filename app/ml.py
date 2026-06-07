@@ -11,6 +11,10 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from app.logging_config import get_logger
+
+logger = get_logger(__name__)
+
 
 # ---------------------------------------------------------------------------
 # Tokenisation
@@ -445,14 +449,16 @@ class EmbeddingVectorizer:
                 with urllib.request.urlopen(req) as resp:
                     data = _json.loads(resp.read().decode())
             except urllib.error.HTTPError as exc:
+                detail = exc.read().decode()
+                logger.error("Embeddings API error %s: %s", exc.code, detail)
                 raise RuntimeError(
-                    f"Embeddings API error {exc.code}: {exc.read().decode()}"
+                    f"Embeddings API error {exc.code}: {detail}"
                 ) from exc
 
             for item in data["data"]:
                 self._cache[truncated[item["index"]]] = item["embedding"]
 
-            print(f"  Fetched embeddings {i + len(batch)}/{len(to_fetch)}", flush=True)
+            logger.info("Fetched embeddings %d/%d", i + len(batch), len(to_fetch))
 
         self._save_cache()
 

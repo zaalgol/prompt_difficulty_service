@@ -8,6 +8,7 @@ from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 
 from app.config import DEFAULT_MODEL_PATH, MODEL_VERSION, PROJECT_ROOT, SERVICE_CONFIG_PATH
 from app.dataset import label_dataset
+from app.logging_config import get_logger
 from app.modeling import classify_from_artifact, load_model, train_model
 from app.schemas import (
     ClassifyRequest,
@@ -16,6 +17,8 @@ from app.schemas import (
     TrainRequest,
     TrainResponse,
 )
+
+logger = get_logger(__name__)
 
 
 def _load_config() -> Dict[str, Any]:
@@ -44,11 +47,12 @@ async def lifespan(app: FastAPI):
 
     if artifact:
         version = artifact.get("model_version", "unknown")
-        print(f"[startup] Loaded model '{version}' from {model_path}")
+        logger.info("Loaded model '%s' from %s", version, model_path)
     else:
-        print(f"[startup] No model at {model_path} — using rule-based fallback")
+        logger.warning("No model at %s — using rule-based fallback", model_path)
 
     yield
+    logger.info("Service shutting down")
 
 
 app = FastAPI(
@@ -77,6 +81,7 @@ def health(request: Request) -> dict:
 
 @app.post("/classify", response_model=ClassifyResponse)
 def classify(request: Request, body: ClassifyRequest) -> ClassifyResponse:
+    logger.debug("Classify request: %d chars", len(body.prompt))
     result = classify_from_artifact(body.prompt, request.app.state.artifact)
     return ClassifyResponse(**result)
 
@@ -86,6 +91,7 @@ async def label_dataset_endpoint(
     file: UploadFile = File(...),
 ) -> LabelDatasetResponse:
     if not file.filename or not file.filename.endswith(".json"):
+        logger.warning("Rejected upload with invalid filename: %r", file.filename)
         raise HTTPException(status_code=400, detail="Please upload a .json file.")
 
     try:
@@ -97,7 +103,9 @@ async def label_dataset_endpoint(
 
         output_path = Path("data") / f"{Path(file.filename).stem}_labeled_binary.json"
 
+        logger.info("Labeling dataset from upload '%s'", file.filename)
         total, counts = label_dataset(input_path, output_path)
+        logger.info("Labeled %d prompts -> %s (counts=%s)", total, output_path, counts)
 
         return LabelDatasetResponse(
             total_prompts=total,
@@ -106,6 +114,7 @@ async def label_dataset_endpoint(
         )
 
     except Exception as exc:
+        logger.exception("Failed to label dataset from upload '%s'", file.filename)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
@@ -113,10 +122,15 @@ async def label_dataset_endpoint(
 def train(request: TrainRequest) -> TrainResponse:
     try:
         model_output_path = request.model_output_path or str(DEFAULT_MODEL_PATH)
+        logger.info(
+            "Training requested: input=%s output=%s",
+            request.labeled_json_path, model_output_path,
+        )
         result = train_model(
             labeled_json_path=request.labeled_json_path,
             model_output_path=model_output_path,
         )
         return TrainResponse(**result)
     except Exception as exc:
+        logger.exception("Training failed for input %s", request.labeled_json_path)
         raise HTTPException(status_code=500, detail=str(exc)) from exc

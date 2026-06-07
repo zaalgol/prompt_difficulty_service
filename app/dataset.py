@@ -4,6 +4,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 from app.labeling import label_prompt_dict
+from app.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 
 def load_json(path: str | Path) -> Dict[str, Any]:
@@ -19,15 +22,21 @@ def save_json(data: Dict[str, Any], path: str | Path) -> None:
 
 
 def label_dataset(input_path: str | Path, output_path: str | Path) -> Tuple[int, Dict[str, int]]:
+    logger.info("Loading dataset from %s", input_path)
     data = load_json(input_path)
 
     prompts = data.get("prompts")
     if not isinstance(prompts, list):
+        logger.error("Input JSON %s has no top-level 'prompts' array", input_path)
         raise ValueError("Input JSON must contain a top-level 'prompts' array.")
 
     labeled_prompts = [label_prompt_dict(item) for item in prompts]
 
     label_counts = Counter(item["difficulty_label"] for item in labeled_prompts)
+    logger.info(
+        "Pseudo-labeled %d prompts (counts=%s); writing to %s",
+        len(labeled_prompts), dict(label_counts), output_path,
+    )
 
     output = dict(data)
     output["prompts"] = labeled_prompts

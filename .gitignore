@@ -2,5 +2,6 @@
 .dev
 data
 models
+logs
 **/*.pyc
 __pycache__/

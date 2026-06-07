@@ -27,10 +27,25 @@ Use the project skills for detailed steps:
 ## Expected project structure
 
 ```text
-app/        FastAPI app, schemas, labeling, dataset, modeling
+app/        FastAPI app, schemas, labeling, dataset, modeling, logging
 scripts/    CLI scripts for labeling, training, and prompt classification
 data/       input and generated datasets
 models/     trained model artifacts
+logs/       rotating log files (gitignored)
+```
+
+Key files:
+
+```text
+app/config.py          paths, constants, LOG_LEVEL env var
+app/logging_config.py  central logging setup (terminal + rotating file)
+app/labeling.py        rule-based pseudo-labeler
+app/dataset.py         JSON load/save/labeling
+app/modeling.py        training and inference, all model variants
+app/main.py            FastAPI endpoints
+app/schemas.py         Pydantic models
+app/ml.py              pure-Python ML utilities (TF-IDF, LogReg, etc.)
+service_config.json    runtime override for model_path
 ```
 
 Original dataset path:
@@ -45,11 +60,13 @@ Generated labeled dataset:
 data/report_labeled_binary.json
 ```
 
-Trained model:
+Default trained model (TF-IDF + LogReg baseline):
 
 ```text
 models/prompt_classifier.joblib
 ```
+
+Active model is set in `service_config.json` (currently the ensemble embeddings model).
 
 ## Labels
 

@@ -34,6 +34,9 @@ from app.config import (
     MODEL_VERSION,
 )
 from app.labeling import rule_based_label
+from app.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 
 def _load_labeled_examples(path: str | Path) -> Tuple[List[str], List[str]]:
@@ -83,7 +86,7 @@ def train_model_embeddings(
     cache_path: str | Path = DEFAULT_EMBEDDING_CACHE_PATH,
 ) -> Dict[str, Any]:
     texts, labels = _load_labeled_examples(labeled_json_path)
-    print(f"Fetching embeddings for {len(texts)} examples (cached at {cache_path})...")
+    logger.info("Fetching embeddings for %d examples (cached at %s)", len(texts), cache_path)
     pipeline = EmbeddingPipeline(
         EmbeddingVectorizer(model=EMBEDDING_MODEL, cache_path=cache_path),
         DenseLogisticRegression(max_iter=300, class_weight={LABEL_CHEAP_OK: 1.0, LABEL_ESCALATE: 1.3}),
@@ -100,6 +103,10 @@ def _train_with_pipeline(
     model_output_path: str | Path,
 ) -> Dict[str, Any]:
     """Shared train/validate/save logic for any pipeline object."""
+    logger.info(
+        "Training '%s' on %d examples (counts=%s)",
+        model_version, len(texts), dict(label_counts),
+    )
     validation_accuracy: Optional[float] = None
     validation_false_cheap_rate: Optional[float] = None
 
@@ -117,7 +124,16 @@ def _train_with_pipeline(
         )
         true_escalate = sum(1 for a in y_val if a == LABEL_ESCALATE)
         validation_false_cheap_rate = false_cheap / true_escalate if true_escalate else 0.0
+        logger.info(
+            "Validation: accuracy=%.4f false_cheap_rate=%.4f",
+            validation_accuracy, validation_false_cheap_rate,
+        )
     else:
+        logger.warning(
+            "Too few examples for a holdout split (%d examples); "
+            "training on all data without validation",
+            len(texts),
+        )
         pipeline.fit(texts, labels)
 
     artifact = {
@@ -132,6 +148,7 @@ def _train_with_pipeline(
     output_path = Path(model_output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     ml.dump(artifact, output_path)
+    logger.info("Saved model '%s' to %s", model_version, output_path)
 
     return {
         "model_path": str(output_path),
@@ -163,7 +180,7 @@ def train_model_lgbm_embeddings(
     cache_path: str | Path = DEFAULT_EMBEDDING_CACHE_PATH,
 ) -> Dict[str, Any]:
     texts, labels = _load_labeled_examples(labeled_json_path)
-    print(f"Fetching embeddings for {len(texts)} examples (cached at {cache_path})...")
+    logger.info("Fetching embeddings for %d examples (cached at %s)", len(texts), cache_path)
     pipeline = LightGBMEmbeddingPipeline(
         EmbeddingVectorizer(model=EMBEDDING_MODEL, cache_path=cache_path),
         class_weight={LABEL_CHEAP_OK: 1.0, LABEL_ESCALATE: 1.3},
@@ -189,7 +206,7 @@ def train_model_lgbm_embeddings_tuned(
     texts, labels = _load_labeled_examples(labeled_json_path)
     label_counts = Counter(labels)
 
-    print(f"Fetching embeddings for {len(texts)} examples (cached at {cache_path})...")
+    logger.info("Fetching embeddings for %d examples (cached at %s)", len(texts), cache_path)
     vectorizer = EmbeddingVectorizer(model=EMBEDDING_MODEL, cache_path=cache_path)
     X_all = np.array(vectorizer.fit_transform(texts), dtype=np.float32)
     y_all = np.array(labels)
@@ -219,7 +236,7 @@ def train_model_lgbm_embeddings_tuned(
         verbose=-1,
     )
 
-    print(f"Searching {n_iter} hyperparameter combinations × {cv}-fold CV...")
+    logger.info("Searching %d hyperparameter combinations × %d-fold CV", n_iter, cv)
     search = RandomizedSearchCV(
         base_clf,
         param_dist,
@@ -235,8 +252,8 @@ def train_model_lgbm_embeddings_tuned(
         warnings.filterwarnings("ignore", message=".*feature names.*", category=UserWarning)
         search.fit(X_train, y_train)
 
-    print(f"Best CV balanced-accuracy: {search.best_score_:.4f}")
-    print(f"Best params: {search.best_params_}")
+    logger.info("Best CV balanced-accuracy: %.4f", search.best_score_)
+    logger.info("Best params: %s", search.best_params_)
 
     pipeline = TunedEmbeddingPipeline(vectorizer, search.best_estimator_)
 
@@ -291,7 +308,7 @@ def train_model_lgbm_embeddings_optuna(
     texts, labels = _load_labeled_examples(labeled_json_path)
     label_counts = Counter(labels)
 
-    print(f"Fetching embeddings for {len(texts)} examples (cached at {cache_path})...")
+    logger.info("Fetching embeddings for %d examples (cached at %s)", len(texts), cache_path)
     vectorizer = EmbeddingVectorizer(model=EMBEDDING_MODEL, cache_path=cache_path)
     X_all = np.array(vectorizer.fit_transform(texts), dtype=np.float32)
     y_all = np.array(labels)
@@ -306,7 +323,7 @@ def train_model_lgbm_embeddings_optuna(
 
     kf = StratifiedKFold(n_splits=cv, shuffle=True, random_state=42)
 
-    def objective(trial: "optuna.Trial") -> float:
+    def objective(trial: "optuna.Trial") -> float:  # noqa: D401
         params = {
             "n_estimators":      trial.suggest_int("n_estimators", 100, 1000),
             "learning_rate":     trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
@@ -335,11 +352,11 @@ def train_model_lgbm_embeddings_optuna(
         direction="maximize",
         sampler=optuna.samplers.TPESampler(seed=42),
     )
-    print(f"Running Optuna TPE search: {n_trials} trials × {cv}-fold CV...")
+    logger.info("Running Optuna TPE search: %d trials × %d-fold CV", n_trials, cv)
     study.optimize(objective, n_trials=n_trials, show_progress_bar=False)
 
-    print(f"Best CV balanced-accuracy: {study.best_value:.4f}")
-    print(f"Best params: {study.best_params}")
+    logger.info("Best CV balanced-accuracy: %.4f", study.best_value)
+    logger.info("Best params: %s", study.best_params)
 
     best_clf = lgb.LGBMClassifier(
         **study.best_params,
@@ -408,7 +425,7 @@ def train_model_ensemble_embeddings(
     texts, labels = _load_labeled_examples(labeled_json_path)
     label_counts = Counter(labels)
 
-    print(f"Fetching embeddings for {len(texts)} examples (cached at {cache_path})...")
+    logger.info("Fetching embeddings for %d examples (cached at %s)", len(texts), cache_path)
     vectorizer = EmbeddingVectorizer(model=EMBEDDING_MODEL, cache_path=cache_path)
     X_all = np.array(vectorizer.fit_transform(texts), dtype=np.float32)
     y_all = np.array(labels)
@@ -423,6 +440,7 @@ def train_model_ensemble_embeddings(
 
     kf = StratifiedKFold(n_splits=cv, shuffle=True, random_state=42)
     scorer = make_scorer(balanced_accuracy_score)
+    logger.info("Training ensemble (LightGBM + XGBoost + CatBoost) on %d examples", len(texts))
 
     # ── LightGBM ────────────────────────────────────────────────────────────
     lgbm_grid = {
@@ -431,7 +449,7 @@ def train_model_ensemble_embeddings(
         "num_leaves":        [15, 31],
         "min_child_samples": [5, 10],
     }
-    print(f"Grid-searching LightGBM ({_grid_size(lgbm_grid)} combos × {cv} folds)...")
+    logger.info("Grid-searching LightGBM (%d combos × %d folds)", _grid_size(lgbm_grid), cv)
     lgbm_search = GridSearchCV(
         lgb.LGBMClassifier(
             class_weight={LABEL_CHEAP_OK: 1.0, LABEL_ESCALATE: 1.3},
@@ -442,8 +460,8 @@ def train_model_ensemble_embeddings(
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message=".*feature names.*", category=UserWarning)
         lgbm_search.fit(X_train, y_train)
-    print(f"  LGBM best CV balanced-acc: {lgbm_search.best_score_:.4f}")
-    print(f"  LGBM best params:          {lgbm_search.best_params_}")
+    logger.info("LGBM best CV balanced-acc: %.4f", lgbm_search.best_score_)
+    logger.info("LGBM best params: %s", lgbm_search.best_params_)
 
     # ── XGBoost ─────────────────────────────────────────────────────────────
     # XGBoost requires numeric labels; LabelEncoder sorts alphabetically so
@@ -458,7 +476,7 @@ def train_model_ensemble_embeddings(
         "max_depth":     [3, 5],
         "subsample":     [0.8, 1.0],
     }
-    print(f"Grid-searching XGBoost ({_grid_size(xgb_grid)} combos × {cv} folds)...")
+    logger.info("Grid-searching XGBoost (%d combos × %d folds)", _grid_size(xgb_grid), cv)
     xgb_search = GridSearchCV(
         xgb.XGBClassifier(
             scale_pos_weight=1.3,
@@ -470,8 +488,8 @@ def train_model_ensemble_embeddings(
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", category=UserWarning)
         xgb_search.fit(X_train, y_train_xgb)
-    print(f"  XGBoost best CV balanced-acc: {xgb_search.best_score_:.4f}")
-    print(f"  XGBoost best params:          {xgb_search.best_params_}")
+    logger.info("XGBoost best CV balanced-acc: %.4f", xgb_search.best_score_)
+    logger.info("XGBoost best params: %s", xgb_search.best_params_)
 
     # ── CatBoost ─────────────────────────────────────────────────────────────
     # sklearn.clone() cannot clone CatBoost when class_weights is passed to the
@@ -482,7 +500,7 @@ def train_model_ensemble_embeddings(
         "learning_rate": [0.05, 0.1],
         "depth":         [4, 6],
     }
-    print(f"Grid-searching CatBoost ({_grid_size(cat_grid)} combos × {cv} folds)...")
+    logger.info("Grid-searching CatBoost (%d combos × %d folds)", _grid_size(cat_grid), cv)
     cb_search = GridSearchCV(
         cb.CatBoostClassifier(verbose=0),
         cat_grid, cv=kf, scoring=scorer, n_jobs=1, verbose=0,
@@ -490,8 +508,8 @@ def train_model_ensemble_embeddings(
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", category=UserWarning)
         cb_search.fit(X_train, y_train)
-    print(f"  CatBoost best CV balanced-acc: {cb_search.best_score_:.4f}")
-    print(f"  CatBoost best params:          {cb_search.best_params_}")
+    logger.info("CatBoost best CV balanced-acc: %.4f", cb_search.best_score_)
+    logger.info("CatBoost best params: %s", cb_search.best_params_)
 
     # Refit best CatBoost params with class weighting on the full training set
     best_cb = cb.CatBoostClassifier(
@@ -566,6 +584,10 @@ def classify_from_artifact(prompt: str, artifact: Optional[Dict[str, Any]]) -> D
     """Classify a prompt using a pre-loaded model artifact (or rule-based fallback)."""
     if artifact is None:
         label, confidence, reason, features = rule_based_label(prompt)
+        logger.info(
+            "Classified prompt -> %s (confidence=%.4f, method=rule_based_fallback)",
+            label, confidence,
+        )
         return {
             "label": label,
             "confidence": confidence,
@@ -596,8 +618,17 @@ def classify_from_artifact(prompt: str, artifact: Optional[Dict[str, Any]]) -> D
             "Model predicted cheap_ok, but confidence was below the conservative threshold; "
             "routing label changed to escalate."
         )
+        logger.info(
+            "Confidence %.4f below threshold %.2f; overriding cheap_ok -> escalate",
+            confidence, MIN_CHEAP_CONFIDENCE,
+        )
 
     _, _, rule_reason, features = rule_based_label(prompt)
+
+    logger.info(
+        "Classified prompt -> %s (confidence=%.4f, raw=%s, model=%s)",
+        final_label, confidence, predicted_label, artifact.get("model_version", MODEL_VERSION),
+    )
 
     return {
         "label": final_label,
