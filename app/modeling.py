@@ -15,6 +15,7 @@ from app.ml import (
     LogisticRegression,
     Pipeline,
     TfidfVectorizer,
+    TokenScaler,
     TunedEmbeddingPipeline,
     accuracy_score,
     train_test_split,
@@ -45,7 +46,17 @@ def _timestamped_path(path: Path) -> Path:
     return path.parent / f"{ts}__{path.name}"
 
 
-def _load_labeled_examples(path: str | Path) -> Tuple[List[str], List[str]]:
+def _extract_total_input_tokens(item: Dict[str, Any]) -> Optional[float]:
+    """Pull `tokens.total_input_tokens` from a prompt record; None if absent."""
+    tokens = item.get("tokens")
+    if isinstance(tokens, dict):
+        value = tokens.get("total_input_tokens")
+        if isinstance(value, (int, float)):
+            return float(value)
+    return None
+
+
+def _load_labeled_examples(path: str | Path) -> Tuple[List[str], List[str], List[Optional[float]]]:
     with Path(path).open("r", encoding="utf-8") as f:
         data = json.load(f)
 
@@ -55,6 +66,7 @@ def _load_labeled_examples(path: str | Path) -> Tuple[List[str], List[str]]:
 
     texts: List[str] = []
     labels: List[str] = []
+    tokens: List[Optional[float]] = []
 
     for item in prompts:
         prompt = item.get("prompt")
@@ -62,6 +74,7 @@ def _load_labeled_examples(path: str | Path) -> Tuple[List[str], List[str]]:
         if isinstance(prompt, str) and label in {LABEL_CHEAP_OK, LABEL_ESCALATE}:
             texts.append(prompt)
             labels.append(label)
+            tokens.append(_extract_total_input_tokens(item))
 
     if not texts:
         raise ValueError("No labeled examples found. Expected 'prompt' and 'difficulty_label' fields.")
@@ -69,21 +82,21 @@ def _load_labeled_examples(path: str | Path) -> Tuple[List[str], List[str]]:
     if len(set(labels)) < 2:
         raise ValueError("Need at least two label classes to train a classifier.")
 
-    return texts, labels
+    return texts, labels, tokens
 
 
 def train_model(
     labeled_json_path: str | Path,
     model_output_path: str | Path = DEFAULT_MODEL_PATH,
 ) -> Dict[str, Any]:
-    texts, labels = _load_labeled_examples(labeled_json_path)
+    texts, labels, tokens = _load_labeled_examples(labeled_json_path)
     pipeline = Pipeline(
         steps=[
             ("tfidf", TfidfVectorizer(lowercase=True, ngram_range=(1, 2), max_features=30000, min_df=2)),
             ("classifier", LogisticRegression(max_iter=1000, class_weight={LABEL_CHEAP_OK: 1.0, LABEL_ESCALATE: 1.3})),
         ]
     )
-    return _train_with_pipeline(pipeline, texts, labels, Counter(labels), MODEL_VERSION, model_output_path)
+    return _train_with_pipeline(pipeline, texts, labels, tokens, Counter(labels), MODEL_VERSION, model_output_path)
 
 
 def train_model_embeddings(
@@ -91,19 +104,20 @@ def train_model_embeddings(
     model_output_path: str | Path = DEFAULT_EMBEDDING_MODEL_PATH,
     cache_path: str | Path = DEFAULT_EMBEDDING_CACHE_PATH,
 ) -> Dict[str, Any]:
-    texts, labels = _load_labeled_examples(labeled_json_path)
+    texts, labels, tokens = _load_labeled_examples(labeled_json_path)
     logger.info("Fetching embeddings for %d examples (cached at %s)", len(texts), cache_path)
     pipeline = EmbeddingPipeline(
         EmbeddingVectorizer(model=EMBEDDING_MODEL, cache_path=cache_path),
         DenseLogisticRegression(max_iter=300, class_weight={LABEL_CHEAP_OK: 1.0, LABEL_ESCALATE: 1.3}),
     )
-    return _train_with_pipeline(pipeline, texts, labels, Counter(labels), f"{MODEL_VERSION}-embeddings", model_output_path)
+    return _train_with_pipeline(pipeline, texts, labels, tokens, Counter(labels), f"{MODEL_VERSION}-embeddings", model_output_path)
 
 
 def _train_with_pipeline(
     pipeline: Any,
     texts: List[str],
     labels: List[str],
+    tokens: List[Optional[float]],
     label_counts: Counter,
     model_version: str,
     model_output_path: str | Path,
@@ -117,11 +131,11 @@ def _train_with_pipeline(
     validation_false_cheap_rate: Optional[float] = None
 
     if len(texts) >= 50 and min(label_counts.values()) >= 5:
-        x_train, x_val, y_train, y_val = train_test_split(
-            texts, labels, test_size=0.15, random_state=42, stratify=labels,
+        x_train, x_val, y_train, y_val, tok_train, tok_val = train_test_split(
+            texts, labels, tokens, test_size=0.15, random_state=42, stratify=labels,
         )
-        pipeline.fit(x_train, y_train)
-        y_pred = pipeline.predict(x_val)
+        pipeline.fit(x_train, y_train, tok_train)
+        y_pred = pipeline.predict(x_val, tok_val)
         validation_accuracy = float(accuracy_score(y_val, y_pred))
 
         false_cheap = sum(
@@ -140,7 +154,7 @@ def _train_with_pipeline(
             "training on all data without validation",
             len(texts),
         )
-        pipeline.fit(texts, labels)
+        pipeline.fit(texts, labels, tokens)
 
     artifact = {
         "model_version": model_version,
@@ -169,13 +183,13 @@ def train_model_lgbm(
     labeled_json_path: str | Path,
     model_output_path: str | Path = DEFAULT_LGBM_MODEL_PATH,
 ) -> Dict[str, Any]:
-    texts, labels = _load_labeled_examples(labeled_json_path)
+    texts, labels, tokens = _load_labeled_examples(labeled_json_path)
     pipeline = LightGBMTfidfPipeline(
         TfidfVectorizer(lowercase=True, ngram_range=(1, 2), max_features=30000, min_df=2),
         class_weight={LABEL_CHEAP_OK: 1.0, LABEL_ESCALATE: 1.3},
     )
     return _train_with_pipeline(
-        pipeline, texts, labels, Counter(labels),
+        pipeline, texts, labels, tokens, Counter(labels),
         f"{MODEL_VERSION}-lgbm", model_output_path,
     )
 
@@ -185,14 +199,14 @@ def train_model_lgbm_embeddings(
     model_output_path: str | Path = DEFAULT_LGBM_EMBEDDING_MODEL_PATH,
     cache_path: str | Path = DEFAULT_EMBEDDING_CACHE_PATH,
 ) -> Dict[str, Any]:
-    texts, labels = _load_labeled_examples(labeled_json_path)
+    texts, labels, tokens = _load_labeled_examples(labeled_json_path)
     logger.info("Fetching embeddings for %d examples (cached at %s)", len(texts), cache_path)
     pipeline = LightGBMEmbeddingPipeline(
         EmbeddingVectorizer(model=EMBEDDING_MODEL, cache_path=cache_path),
         class_weight={LABEL_CHEAP_OK: 1.0, LABEL_ESCALATE: 1.3},
     )
     return _train_with_pipeline(
-        pipeline, texts, labels, Counter(labels),
+        pipeline, texts, labels, tokens, Counter(labels),
         f"{MODEL_VERSION}-lgbm-embeddings", model_output_path,
     )
 
@@ -209,7 +223,7 @@ def train_model_lgbm_embeddings_tuned(
     from sklearn.metrics import balanced_accuracy_score, make_scorer
     from sklearn.model_selection import RandomizedSearchCV, StratifiedKFold
 
-    texts, labels = _load_labeled_examples(labeled_json_path)
+    texts, labels, tokens = _load_labeled_examples(labeled_json_path)
     label_counts = Counter(labels)
 
     logger.info("Fetching embeddings for %d examples (cached at %s)", len(texts), cache_path)
@@ -223,6 +237,15 @@ def train_model_lgbm_embeddings_tuned(
         test_size=0.15, random_state=42, stratify=labels,
     )
     train_idx, val_idx = splits[0], splits[1]
+
+    # Fit the token scaler on training rows only (no leakage), then append the
+    # standardized total_input_tokens column to every embedding row.
+    token_scaler = TokenScaler().fit([tokens[i] for i in train_idx])
+    token_col = np.array(
+        [[token_scaler.transform_one(t)] for t in tokens], dtype=np.float32
+    )
+    X_all = np.hstack([X_all, token_col])
+
     X_train, X_val = X_all[train_idx], X_all[val_idx]
     y_train, y_val = y_all[train_idx], y_all[val_idx]
 
@@ -261,9 +284,9 @@ def train_model_lgbm_embeddings_tuned(
     logger.info("Best CV balanced-accuracy: %.4f", search.best_score_)
     logger.info("Best params: %s", search.best_params_)
 
-    pipeline = TunedEmbeddingPipeline(vectorizer, search.best_estimator_)
+    pipeline = TunedEmbeddingPipeline(vectorizer, search.best_estimator_, token_scaler)
 
-    y_pred = pipeline.predict([texts[i] for i in val_idx])
+    y_pred = pipeline.predict([texts[i] for i in val_idx], [tokens[i] for i in val_idx])
     validation_accuracy = float(sum(a == b for a, b in zip(y_val.tolist(), y_pred)) / len(y_pred))
     true_escalate = sum(1 for a in y_val if a == LABEL_ESCALATE)
     false_cheap = sum(1 for a, p in zip(y_val.tolist(), y_pred) if a == LABEL_ESCALATE and p == LABEL_CHEAP_OK)
@@ -311,7 +334,7 @@ def train_model_lgbm_embeddings_optuna(
 
     optuna.logging.set_verbosity(optuna.logging.WARNING)
 
-    texts, labels = _load_labeled_examples(labeled_json_path)
+    texts, labels, tokens = _load_labeled_examples(labeled_json_path)
     label_counts = Counter(labels)
 
     logger.info("Fetching embeddings for %d examples (cached at %s)", len(texts), cache_path)
@@ -324,6 +347,15 @@ def train_model_lgbm_embeddings_optuna(
         test_size=0.15, random_state=42, stratify=labels,
     )
     train_idx, val_idx = splits[0], splits[1]
+
+    # Fit the token scaler on training rows only (no leakage), then append the
+    # standardized total_input_tokens column to every embedding row.
+    token_scaler = TokenScaler().fit([tokens[i] for i in train_idx])
+    token_col = np.array(
+        [[token_scaler.transform_one(t)] for t in tokens], dtype=np.float32
+    )
+    X_all = np.hstack([X_all, token_col])
+
     X_train, X_val = X_all[train_idx], X_all[val_idx]
     y_train, y_val = y_all[train_idx], y_all[val_idx]
 
@@ -373,9 +405,9 @@ def train_model_lgbm_embeddings_optuna(
         warnings.filterwarnings("ignore", message=".*feature names.*", category=UserWarning)
         best_clf.fit(X_train, y_train)
 
-    pipeline = TunedEmbeddingPipeline(vectorizer, best_clf)
+    pipeline = TunedEmbeddingPipeline(vectorizer, best_clf, token_scaler)
 
-    y_pred = pipeline.predict([texts[i] for i in val_idx])
+    y_pred = pipeline.predict([texts[i] for i in val_idx], [tokens[i] for i in val_idx])
     validation_accuracy = float(sum(a == b for a, b in zip(y_val.tolist(), y_pred)) / len(y_pred))
     true_escalate = sum(1 for a in y_val if a == LABEL_ESCALATE)
     false_cheap = sum(1 for a, p in zip(y_val.tolist(), y_pred) if a == LABEL_ESCALATE and p == LABEL_CHEAP_OK)
@@ -428,7 +460,7 @@ def train_model_ensemble_embeddings(
     from sklearn.metrics import balanced_accuracy_score, make_scorer
     from sklearn.model_selection import GridSearchCV, StratifiedKFold
 
-    texts, labels = _load_labeled_examples(labeled_json_path)
+    texts, labels, tokens = _load_labeled_examples(labeled_json_path)
     label_counts = Counter(labels)
 
     logger.info("Fetching embeddings for %d examples (cached at %s)", len(texts), cache_path)
@@ -441,6 +473,15 @@ def train_model_ensemble_embeddings(
         test_size=0.15, random_state=42, stratify=labels,
     )
     train_idx, val_idx = splits[0], splits[1]
+
+    # Fit the token scaler on training rows only (no leakage), then append the
+    # standardized total_input_tokens column to every embedding row.
+    token_scaler = TokenScaler().fit([tokens[i] for i in train_idx])
+    token_col = np.array(
+        [[token_scaler.transform_one(t)] for t in tokens], dtype=np.float32
+    )
+    X_all = np.hstack([X_all, token_col])
+
     X_train, X_val = X_all[train_idx], X_all[val_idx]
     y_train, y_val = y_all[train_idx], y_all[val_idx]
 
@@ -533,10 +574,12 @@ def train_model_ensemble_embeddings(
             ("xgb",      xgb_search.best_estimator_),
             ("catboost", best_cb),
         ],
+        token_scaler,
     )
 
     val_texts = [texts[i] for i in val_idx]
-    y_pred = pipeline.predict(val_texts)
+    val_tokens = [tokens[i] for i in val_idx]
+    y_pred = pipeline.predict(val_texts, val_tokens)
     validation_accuracy = float(sum(a == b for a, b in zip(y_val.tolist(), y_pred)) / len(y_pred))
     true_escalate = sum(1 for a in y_val if a == LABEL_ESCALATE)
     false_cheap = sum(1 for a, p in zip(y_val.tolist(), y_pred) if a == LABEL_ESCALATE and p == LABEL_CHEAP_OK)
@@ -586,8 +629,17 @@ def load_model(model_path: str | Path = DEFAULT_MODEL_PATH) -> Optional[Dict[str
     return ml.load(path)
 
 
-def classify_from_artifact(prompt: str, artifact: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-    """Classify a prompt using a pre-loaded model artifact (or rule-based fallback)."""
+def classify_from_artifact(
+    prompt: str,
+    artifact: Optional[Dict[str, Any]],
+    total_input_tokens: Optional[float] = None,
+) -> Dict[str, Any]:
+    """Classify a prompt using a pre-loaded model artifact (or rule-based fallback).
+
+    `total_input_tokens` is the prompt's input-token count, used as an auxiliary
+    feature by models trained with it. None means "unknown" and maps to a neutral
+    feature value; models trained before the token feature ignore it entirely.
+    """
     if artifact is None:
         label, confidence, reason, features = rule_based_label(prompt)
         # Apply the same conservative minimum-cheap-confidence policy as the
@@ -618,12 +670,13 @@ def classify_from_artifact(prompt: str, artifact: Optional[Dict[str, Any]]) -> D
     # Fail closed: any inference error (e.g. embedding network/credential
     # failure, corrupt cache) routes to escalate rather than surfacing a 500 or
     # accidentally returning cheap_ok.
+    tokens = [total_input_tokens]
     try:
-        predicted_label = pipeline.predict([prompt])[0]
+        predicted_label = pipeline.predict([prompt], tokens)[0]
         class_to_probability: Dict[str, float] = {}
         if hasattr(pipeline, "predict_proba"):
             classes = list(pipeline.classes_)
-            probabilities = pipeline.predict_proba([prompt])[0]
+            probabilities = pipeline.predict_proba([prompt], tokens)[0]
             class_to_probability = {c: float(p) for c, p in zip(classes, probabilities)}
             raw_probability = class_to_probability[predicted_label]
         else:
@@ -681,9 +734,14 @@ def classify_from_artifact(prompt: str, artifact: Optional[Dict[str, Any]]) -> D
             "raw_model_probability": round(raw_probability, 4),
             "rule_based_reason": rule_reason,
             "cheap_confidence_threshold": MIN_CHEAP_CONFIDENCE,
+            "total_input_tokens": total_input_tokens,
         },
     }
 
 
-def classify_with_model(prompt: str, model_path: str | Path = DEFAULT_MODEL_PATH) -> Dict[str, Any]:
-    return classify_from_artifact(prompt, load_model(model_path))
+def classify_with_model(
+    prompt: str,
+    model_path: str | Path = DEFAULT_MODEL_PATH,
+    total_input_tokens: Optional[float] = None,
+) -> Dict[str, Any]:
+    return classify_from_artifact(prompt, load_model(model_path), total_input_tokens)

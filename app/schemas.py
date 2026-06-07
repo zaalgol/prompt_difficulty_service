@@ -7,6 +7,10 @@ class ClassifyRequest(BaseModel):
     # the same text the caller sent (the embedding path truncates beyond this),
     # and to bound memory/CPU per request.
     prompt: str = Field(..., min_length=1, max_length=20_000)
+    # The prompt's input-token count, used as an auxiliary feature by models
+    # trained with it. Omit when unknown — it then maps to a neutral feature
+    # value, and models trained before the token feature ignore it entirely.
+    total_input_tokens: Optional[int] = Field(default=None, ge=0)
     metadata: Optional[Dict[str, Any]] = None
 
 

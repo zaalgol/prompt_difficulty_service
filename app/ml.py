@@ -33,6 +33,79 @@ def _tokenize(text: str, lowercase: bool, ngram_range: Tuple[int, int]) -> List[
 
 
 # ---------------------------------------------------------------------------
+# Token-count feature
+# ---------------------------------------------------------------------------
+# The classifier can use the prompt's `total_input_tokens` as one extra feature
+# alongside the text features. Raw counts span 0..tens-of-thousands, which would
+# dominate the normalized text features it is appended to, so we standardize
+# log1p(count) to ~zero-mean/unit-variance. Tree models are scale-insensitive,
+# but logistic regression is not, so we scale for all model variants uniformly.
+
+class TokenScaler:
+    """Standardizes log1p(token_count) so the single token-count feature sits on
+    the same scale as the text features it is appended to."""
+
+    def __init__(self) -> None:
+        self.mean_ = 0.0
+        self.std_ = 1.0
+
+    @staticmethod
+    def _log(t: Any) -> float:
+        try:
+            return math.log1p(max(0.0, float(t)))
+        except (TypeError, ValueError):
+            return 0.0
+
+    def fit(self, tokens: List[Any]) -> "TokenScaler":
+        vals = [self._log(t) for t in tokens if t is not None]
+        n = len(vals)
+        if not n:
+            return self
+        self.mean_ = sum(vals) / n
+        var = sum((v - self.mean_) ** 2 for v in vals) / n
+        self.std_ = math.sqrt(var) or 1.0
+        return self
+
+    def transform_one(self, t: Any) -> float:
+        # An unknown count (None) maps to the standardized mean (0.0) so a caller
+        # that omits the token count gets a neutral feature, not a fabricated one.
+        if t is None:
+            return 0.0
+        return (self._log(t) - self.mean_) / self.std_
+
+
+def _as_tokens(tokens: Optional[List[Any]], n: int) -> List[Any]:
+    """Coerce a tokens argument aligned to n samples; None -> all-unknown."""
+    if tokens is None:
+        return [None] * n
+    return list(tokens)
+
+
+def _augment_dense_rows(
+    rows: List[List[float]], tokens: Optional[List[Any]], scaler: "TokenScaler",
+) -> List[List[float]]:
+    """Append one standardized token-count feature to each dense feature row."""
+    toks = _as_tokens(tokens, len(rows))
+    return [list(r) + [scaler.transform_one(t)] for r, t in zip(rows, toks)]
+
+
+def _augment_sparse_rows(
+    rows: List[Dict[int, float]],
+    tokens: Optional[List[Any]],
+    scaler: "TokenScaler",
+    token_index: int,
+) -> List[Dict[int, float]]:
+    """Add the standardized token-count feature at `token_index` to each row."""
+    toks = _as_tokens(tokens, len(rows))
+    out: List[Dict[int, float]] = []
+    for r, t in zip(rows, toks):
+        d = dict(r)
+        d[token_index] = scaler.transform_one(t)
+        out.append(d)
+    return out
+
+
+# ---------------------------------------------------------------------------
 # TF-IDF vectoriser
 # ---------------------------------------------------------------------------
 
@@ -208,21 +281,31 @@ class Pipeline:
         self.steps = steps
         self._vec: TfidfVectorizer = steps[0][1]
         self._clf: LogisticRegression = steps[1][1]
+        self._token_scaler = TokenScaler()
 
     @property
     def classes_(self) -> List[str]:
         return self._clf.classes_
 
-    def fit(self, texts: List[str], labels: List[str]) -> "Pipeline":
-        X = self._vec.fit_transform(texts)
-        self._clf.fit(X, labels)
+    def _features(self, rows: List[Dict[int, float]], tokens: Optional[List[Any]]):
+        # getattr keeps models pickled before the token feature was added working:
+        # without a scaler they classify on text features only, as before.
+        scaler = getattr(self, "_token_scaler", None)
+        if scaler is None:
+            return rows
+        return _augment_sparse_rows(rows, tokens, scaler, len(self._vec.vocabulary_))
+
+    def fit(self, texts: List[str], labels: List[str], tokens: Optional[List[Any]] = None) -> "Pipeline":
+        rows = self._vec.fit_transform(texts)
+        self._token_scaler.fit(_as_tokens(tokens, len(rows)))
+        self._clf.fit(self._features(rows, tokens), labels)
         return self
 
-    def predict(self, texts: List[str]) -> List[str]:
-        return self._clf.predict(self._vec.transform(texts))
+    def predict(self, texts: List[str], tokens: Optional[List[Any]] = None) -> List[str]:
+        return self._clf.predict(self._features(self._vec.transform(texts), tokens))
 
-    def predict_proba(self, texts: List[str]) -> List[List[float]]:
-        return self._clf.predict_proba(self._vec.transform(texts))
+    def predict_proba(self, texts: List[str], tokens: Optional[List[Any]] = None) -> List[List[float]]:
+        return self._clf.predict_proba(self._features(self._vec.transform(texts), tokens))
 
 
 # ---------------------------------------------------------------------------
@@ -325,10 +408,21 @@ class LightGBMTfidfPipeline:
         self._class_weight = class_weight or {}
         self._clf: Any = None
         self.classes_: List[str] = []
+        self._token_scaler = TokenScaler()
 
-    def fit(self, texts: List[str], labels: List[str]) -> "LightGBMTfidfPipeline":
+    def _matrix(self, rows: List[Dict[int, float]], tokens: Optional[List[Any]]):
+        scaler = getattr(self, "_token_scaler", None)
+        n_features = len(self._vec.vocabulary_)
+        if scaler is None:
+            return _sparse_to_numpy(rows, n_features)
+        rows = _augment_sparse_rows(rows, tokens, scaler, n_features)
+        return _sparse_to_numpy(rows, n_features + 1)
+
+    def fit(self, texts: List[str], labels: List[str], tokens: Optional[List[Any]] = None) -> "LightGBMTfidfPipeline":
         import lightgbm as lgb
-        X = _sparse_to_numpy(self._vec.fit_transform(texts), len(self._vec.vocabulary_))
+        rows = self._vec.fit_transform(texts)
+        self._token_scaler.fit(_as_tokens(tokens, len(rows)))
+        X = self._matrix(rows, tokens)
         self._clf = lgb.LGBMClassifier(
             n_estimators=300,
             learning_rate=0.05,
@@ -340,13 +434,11 @@ class LightGBMTfidfPipeline:
         self.classes_ = list(self._clf.classes_)
         return self
 
-    def predict(self, texts: List[str]) -> List[str]:
-        X = _sparse_to_numpy(self._vec.transform(texts), len(self._vec.vocabulary_))
-        return list(_lgbm_predict(self._clf, X))
+    def predict(self, texts: List[str], tokens: Optional[List[Any]] = None) -> List[str]:
+        return list(_lgbm_predict(self._clf, self._matrix(self._vec.transform(texts), tokens)))
 
-    def predict_proba(self, texts: List[str]) -> List[List[float]]:
-        X = _sparse_to_numpy(self._vec.transform(texts), len(self._vec.vocabulary_))
-        return _lgbm_predict_proba(self._clf, X).tolist()
+    def predict_proba(self, texts: List[str], tokens: Optional[List[Any]] = None) -> List[List[float]]:
+        return _lgbm_predict_proba(self._clf, self._matrix(self._vec.transform(texts), tokens)).tolist()
 
 
 class LightGBMEmbeddingPipeline:
@@ -361,11 +453,20 @@ class LightGBMEmbeddingPipeline:
         self._class_weight = class_weight or {}
         self._clf: Any = None
         self.classes_: List[str] = []
+        self._token_scaler = TokenScaler()
 
-    def fit(self, texts: List[str], labels: List[str]) -> "LightGBMEmbeddingPipeline":
-        import lightgbm as lgb
+    def _matrix(self, rows: List[List[float]], tokens: Optional[List[Any]]):
         import numpy as np
-        X = np.array(self._vec.fit_transform(texts), dtype=np.float32)
+        scaler = getattr(self, "_token_scaler", None)
+        if scaler is not None:
+            rows = _augment_dense_rows(rows, tokens, scaler)
+        return np.array(rows, dtype=np.float32)
+
+    def fit(self, texts: List[str], labels: List[str], tokens: Optional[List[Any]] = None) -> "LightGBMEmbeddingPipeline":
+        import lightgbm as lgb
+        rows = self._vec.fit_transform(texts)
+        self._token_scaler.fit(_as_tokens(tokens, len(rows)))
+        X = self._matrix(rows, tokens)
         self._clf = lgb.LGBMClassifier(
             n_estimators=300,
             learning_rate=0.05,
@@ -377,15 +478,11 @@ class LightGBMEmbeddingPipeline:
         self.classes_ = list(self._clf.classes_)
         return self
 
-    def predict(self, texts: List[str]) -> List[str]:
-        import numpy as np
-        X = np.array(self._vec.transform(texts), dtype=np.float32)
-        return list(_lgbm_predict(self._clf, X))
+    def predict(self, texts: List[str], tokens: Optional[List[Any]] = None) -> List[str]:
+        return list(_lgbm_predict(self._clf, self._matrix(self._vec.transform(texts), tokens)))
 
-    def predict_proba(self, texts: List[str]) -> List[List[float]]:
-        import numpy as np
-        X = np.array(self._vec.transform(texts), dtype=np.float32)
-        return _lgbm_predict_proba(self._clf, X).tolist()
+    def predict_proba(self, texts: List[str], tokens: Optional[List[Any]] = None) -> List[List[float]]:
+        return _lgbm_predict_proba(self._clf, self._matrix(self._vec.transform(texts), tokens)).tolist()
 
 
 # ---------------------------------------------------------------------------
@@ -589,40 +686,58 @@ class EmbeddingPipeline:
     ) -> None:
         self._vec = vectorizer
         self._clf = classifier
+        self._token_scaler = TokenScaler()
 
     @property
     def classes_(self) -> List[str]:
         return self._clf.classes_
 
-    def fit(self, texts: List[str], labels: List[str]) -> "EmbeddingPipeline":
-        X = self._vec.fit_transform(texts)
-        self._clf.fit(X, labels)
+    def _features(self, rows: List[List[float]], tokens: Optional[List[Any]]):
+        scaler = getattr(self, "_token_scaler", None)
+        if scaler is None:
+            return rows
+        return _augment_dense_rows(rows, tokens, scaler)
+
+    def fit(self, texts: List[str], labels: List[str], tokens: Optional[List[Any]] = None) -> "EmbeddingPipeline":
+        rows = self._vec.fit_transform(texts)
+        self._token_scaler.fit(_as_tokens(tokens, len(rows)))
+        self._clf.fit(self._features(rows, tokens), labels)
         return self
 
-    def predict(self, texts: List[str]) -> List[str]:
-        return self._clf.predict(self._vec.transform(texts))
+    def predict(self, texts: List[str], tokens: Optional[List[Any]] = None) -> List[str]:
+        return self._clf.predict(self._features(self._vec.transform(texts), tokens))
 
-    def predict_proba(self, texts: List[str]) -> List[List[float]]:
-        return self._clf.predict_proba(self._vec.transform(texts))
+    def predict_proba(self, texts: List[str], tokens: Optional[List[Any]] = None) -> List[List[float]]:
+        return self._clf.predict_proba(self._features(self._vec.transform(texts), tokens))
 
 
 class TunedEmbeddingPipeline:
     """EmbeddingVectorizer + any sklearn-compatible classifier; picklable."""
 
-    def __init__(self, vectorizer: "EmbeddingVectorizer", classifier: Any) -> None:
+    def __init__(
+        self,
+        vectorizer: "EmbeddingVectorizer",
+        classifier: Any,
+        token_scaler: Optional["TokenScaler"] = None,
+    ) -> None:
         self._vec = vectorizer
         self._clf = classifier
+        self._token_scaler = token_scaler
         self.classes_: List[str] = list(classifier.classes_)
 
-    def predict(self, texts: List[str]) -> List[str]:
+    def _matrix(self, texts: List[str], tokens: Optional[List[Any]]):
         import numpy as np
-        X = np.array(self._vec.transform(texts), dtype=np.float32)
-        return list(_lgbm_predict(self._clf, X))
+        rows = self._vec.transform(texts)
+        scaler = getattr(self, "_token_scaler", None)
+        if scaler is not None:
+            rows = _augment_dense_rows(rows, tokens, scaler)
+        return np.array(rows, dtype=np.float32)
 
-    def predict_proba(self, texts: List[str]) -> List[List[float]]:
-        import numpy as np
-        X = np.array(self._vec.transform(texts), dtype=np.float32)
-        return _lgbm_predict_proba(self._clf, X).tolist()
+    def predict(self, texts: List[str], tokens: Optional[List[Any]] = None) -> List[str]:
+        return list(_lgbm_predict(self._clf, self._matrix(texts, tokens)))
+
+    def predict_proba(self, texts: List[str], tokens: Optional[List[Any]] = None) -> List[List[float]]:
+        return _lgbm_predict_proba(self._clf, self._matrix(texts, tokens)).tolist()
 
 
 class EnsembleEmbeddingPipeline:
@@ -632,19 +747,25 @@ class EnsembleEmbeddingPipeline:
         self,
         vectorizer: "EmbeddingVectorizer",
         classifiers: List[Tuple[str, Any]],
+        token_scaler: Optional["TokenScaler"] = None,
     ) -> None:
         self._vec = vectorizer
         self._clfs = classifiers  # [(name, fitted_clf), ...]
+        self._token_scaler = token_scaler
         self.classes_: List[str] = list(classifiers[0][1].classes_)
 
-    def predict_proba(self, texts: List[str]) -> List[List[float]]:
+    def predict_proba(self, texts: List[str], tokens: Optional[List[Any]] = None) -> List[List[float]]:
         import numpy as np
-        X = np.array(self._vec.transform(texts), dtype=np.float32)
+        rows = self._vec.transform(texts)
+        scaler = getattr(self, "_token_scaler", None)
+        if scaler is not None:
+            rows = _augment_dense_rows(rows, tokens, scaler)
+        X = np.array(rows, dtype=np.float32)
         all_probas = [_lgbm_predict_proba(clf, X) for _, clf in self._clfs]
         avg = np.mean(all_probas, axis=0)
         return avg.tolist()
 
-    def predict(self, texts: List[str]) -> List[str]:
+    def predict(self, texts: List[str], tokens: Optional[List[Any]] = None) -> List[str]:
         import numpy as np
-        avg = np.array(self.predict_proba(texts))
+        avg = np.array(self.predict_proba(texts, tokens))
         return [self.classes_[int(i)] for i in np.argmax(avg, axis=1)]

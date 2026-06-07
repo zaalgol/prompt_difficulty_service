@@ -73,10 +73,14 @@ Invoke-RestMethod `
   -Body '{"prompt":"Refactor the authentication flow and explain the security tradeoffs"}'
 ```
 
+Optionally include `total_input_tokens` (the prompt's input-token count). Models
+trained with it use it as an auxiliary feature; omit it when unknown (it maps to
+a neutral value) and models trained before the feature ignore it.
+
 ## Classify one prompt via CLI (no server needed)
 
 ```powershell
-python scripts/classify_prompt.py --prompt "design a scalable auth system"
+python scripts/classify_prompt.py --prompt "design a scalable auth system" --total-input-tokens 45000
 ```
 
 ## Expected response fields

@@ -113,7 +113,9 @@ def health(request: Request) -> dict:
 @app.post("/classify", response_model=ClassifyResponse)
 def classify(request: Request, body: ClassifyRequest) -> ClassifyResponse:
     logger.debug("Classify request: %d chars", len(body.prompt))
-    result = classify_from_artifact(body.prompt, request.app.state.artifact)
+    result = classify_from_artifact(
+        body.prompt, request.app.state.artifact, body.total_input_tokens,
+    )
     return ClassifyResponse(**result)
 
 
