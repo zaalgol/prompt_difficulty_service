@@ -158,7 +158,7 @@ def test_redis_backend_unavailable_fails_closed_503(client):
             raise AnonymizerBackendUnavailable()
 
         def status(self):
-            return {"engines_loaded": False, "nlp_model": "test", "redis_connected": False}
+            return {"engines_loaded": False, "nlp_model": "test"}
 
     client.app.state.anonymizer_service = _Down()
     response = client.post("/anonymize", json={"prompt": "Contact John Smith.", "session_id": "s"})
@@ -172,8 +172,6 @@ def test_redis_backend_unavailable_fails_closed_503(client):
 def test_health_reports_anonymizer_status(client):
     data = client.get("/health").json()
     assert "anonymizer" in data
-    assert set(data["anonymizer"]) == {"engines_loaded", "nlp_model", "redis_connected"}
+    assert set(data["anonymizer"]) == {"engines_loaded", "nlp_model"}
     # Lazy by default: engines are not loaded just because the process is up.
     assert data["anonymizer"]["engines_loaded"] is False
-    # Vault backend reachability is reported (fakeredis is up under tests).
-    assert data["anonymizer"]["redis_connected"] is True

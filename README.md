@@ -156,9 +156,9 @@ Anonymizer notes:
   and each entity type keeps at most `presidio_max_entries_per_type` mappings.
   Requests **without** a `session_id` never touch Redis (intra-prompt coherence only).
 - If Redis is unreachable, a request **with** a `session_id` fails closed with
-  **503** rather than silently losing coherence; `/health` reports the backend under
-  `anonymizer.redis_connected`. Configure the connection with the `REDIS_URL` env var
-  (or `redis_url` in `service_config.json`); default `redis://localhost:6379/0`.
+  **503** rather than silently losing coherence. Configure the connection with the
+  `REDIS_URL` env var (or `redis_url` in `service_config.json`); default
+  `redis://localhost:6379/0`.
 - `/health` reports anonymizer readiness under `anonymizer.engines_loaded`. Engines
   load lazily on first `/anonymize`; set `"presidio_warm_on_startup": true` in
   `service_config.json` to load them at startup instead.

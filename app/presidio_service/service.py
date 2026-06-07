@@ -150,21 +150,17 @@ class AnonymizerService:
         """Whether the spaCy/Presidio engines are loaded (no side effects)."""
         return self._analyzer is not None and self._anonymizer is not None
 
-    def _redis_connected(self) -> bool:
-        try:
-            self._vault.ping()
-            return True
-        except Exception:
-            return False
-
     def status(self) -> Dict[str, Any]:
-        """Readiness detail for /health (does not trigger an engine load)."""
+        """Readiness detail for /health.
+
+        Deliberately does NOT probe Redis: a health check must not block on a
+        downstream dependency (a slow/refused connect would make /health time
+        out). Redis reachability is surfaced where it matters — a session request
+        fails closed with 503 when the vault is unavailable.
+        """
         return {
             "engines_loaded": self.engines_loaded,
             "nlp_model": PRESIDIO_NLP_MODEL,
-            # Cross-request coherence requires Redis; surface it so a deployment
-            # can gate readiness on the vault backend being reachable.
-            "redis_connected": self._redis_connected(),
         }
 
     def warmup(self) -> None:

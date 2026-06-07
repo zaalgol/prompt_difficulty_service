@@ -86,8 +86,10 @@ def server():
         log_file.seek(0)
         return log_file.read().decode(errors="replace")
 
-    # Poll /health until the server is up (max 15 s)
-    deadline = time.time() + 15
+    # Poll /health until the server is up. The configured trained model (ensemble
+    # embeddings) is loaded during startup, which can take tens of seconds, so the
+    # deadline is generous.
+    deadline = time.time() + 90
     while time.time() < deadline:
         try:
             r = httpx.get(f"{BASE_URL}/health", timeout=1)
