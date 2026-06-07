@@ -1,5 +1,6 @@
 import json
 from collections import Counter
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -37,6 +38,11 @@ from app.labeling import rule_based_label
 from app.logging_config import get_logger
 
 logger = get_logger(__name__)
+
+
+def _timestamped_path(path: Path) -> Path:
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%SZ")
+    return path.parent / f"{ts}__{path.name}"
 
 
 def _load_labeled_examples(path: str | Path) -> Tuple[List[str], List[str]]:
@@ -145,7 +151,7 @@ def _train_with_pipeline(
         "validation_accuracy": validation_accuracy,
         "validation_false_cheap_rate": validation_false_cheap_rate,
     }
-    output_path = Path(model_output_path)
+    output_path = _timestamped_path(Path(model_output_path))
     output_path.parent.mkdir(parents=True, exist_ok=True)
     ml.dump(artifact, output_path)
     logger.info("Saved model '%s' to %s", model_version, output_path)
@@ -274,7 +280,7 @@ def train_model_lgbm_embeddings_tuned(
         "validation_accuracy": validation_accuracy,
         "validation_false_cheap_rate": validation_false_cheap_rate,
     }
-    output_path = Path(model_output_path)
+    output_path = _timestamped_path(Path(model_output_path))
     output_path.parent.mkdir(parents=True, exist_ok=True)
     ml.dump(artifact, output_path)
 
@@ -386,7 +392,7 @@ def train_model_lgbm_embeddings_optuna(
         "validation_accuracy": validation_accuracy,
         "validation_false_cheap_rate": validation_false_cheap_rate,
     }
-    output_path = Path(model_output_path)
+    output_path = _timestamped_path(Path(model_output_path))
     output_path.parent.mkdir(parents=True, exist_ok=True)
     ml.dump(artifact, output_path)
 
@@ -558,7 +564,7 @@ def train_model_ensemble_embeddings(
         "validation_accuracy": validation_accuracy,
         "validation_false_cheap_rate": validation_false_cheap_rate,
     }
-    output_path = Path(model_output_path)
+    output_path = _timestamped_path(Path(model_output_path))
     output_path.parent.mkdir(parents=True, exist_ok=True)
     ml.dump(artifact, output_path)
 

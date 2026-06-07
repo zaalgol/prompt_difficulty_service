@@ -10,7 +10,7 @@ Then a lightweight classifier can be trained on the pseudo-labeled dataset.
 
 ## Install
 
-PowerShell:
+Windows (PowerShell):
 
 ```powershell
 py -3.12 -m venv .venv
@@ -18,21 +18,29 @@ py -3.12 -m venv .venv
 pip install -r requirements.txt
 ```
 
+Linux / macOS:
+
+```bash
+python3.12 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
 ## Run API
 
-```powershell
+```bash
 uvicorn app.main:app --reload --port 8080
 ```
 
 ## Run tests
 
-```powershell
+```bash
 pytest
 ```
 
 ## Label a dataset from CLI
 
-```powershell
+```bash
 python scripts/label_dataset.py --input data/report.json --output data/report_labeled_binary.json
 ```
 
@@ -40,9 +48,18 @@ python scripts/label_dataset.py --input data/report.json --output data/report_la
 
 Default (TF-IDF + LogReg baseline):
 
-```powershell
+```bash
 python scripts/train_model.py --input data/report_labeled_binary.json
 ```
+
+Active model (Embeddings + Ensemble — LGBM, XGBoost, CatBoost):
+
+```bash
+python scripts/train_model.py --input data/report_labeled_binary.json --use-ensemble-embeddings
+```
+
+Each training run saves a new timestamped file (e.g. `models/2026-06-07T06-11-24Z__prompt_classifier_ensemble_embeddings.joblib`).
+Update `service_config.json` to point the service at the new file.
 
 Other variants (pass one flag):
 
@@ -61,7 +78,7 @@ Embedding variants require `OPENAI_API_KEY` to be set.
 
 ## Classify a prompt
 
-PowerShell:
+Windows (PowerShell):
 
 ```powershell
 Invoke-RestMethod `
@@ -71,7 +88,7 @@ Invoke-RestMethod `
   -Body '{"prompt":"Refactor the authentication flow and explain the security tradeoffs"}'
 ```
 
-curl:
+Linux / macOS (curl):
 
 ```bash
 curl -X POST http://localhost:8080/classify \
@@ -81,7 +98,7 @@ curl -X POST http://localhost:8080/classify \
 
 ## Classify from CLI (no server needed)
 
-```powershell
+```bash
 python scripts/classify_prompt.py --prompt "design a scalable auth system"
 ```
 
@@ -97,9 +114,17 @@ python scripts/classify_prompt.py --prompt "design a scalable auth system"
 Logs are written to both the terminal and `logs/service.log` (rotating, 5 MB × 5 files).
 Default level is `INFO`. Override with the `LOG_LEVEL` environment variable:
 
+Windows (PowerShell):
+
 ```powershell
 $env:LOG_LEVEL = "DEBUG"
 uvicorn app.main:app --reload --port 8080
+```
+
+Linux / macOS:
+
+```bash
+LOG_LEVEL=DEBUG uvicorn app.main:app --reload --port 8080
 ```
 
 ## Active model
