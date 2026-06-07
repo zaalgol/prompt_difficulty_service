@@ -1,4 +1,5 @@
 import json
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -70,12 +71,19 @@ app = FastAPI(
 def health(request: Request) -> dict:
     model_path: Path = request.app.state.model_path
     artifact: Optional[dict] = request.app.state.artifact
+    model_loaded = artifact is not None
     return {
+        # Liveness: the process is up. Readiness: the configured trained model
+        # is loaded. When the model is missing the service still answers (rule
+        # fallback) but readiness is false so deployments can detect the
+        # degraded mode instead of silently trusting an unintended classifier.
         "status": "ok",
+        "ready": model_loaded,
+        "mode": "trained_model" if model_loaded else "rule_based_fallback",
         "service": "prompt-difficulty-classifier",
         "model_path": str(model_path),
-        "model_loaded": artifact is not None,
-        "model_version": artifact.get("model_version") if artifact else None,
+        "model_loaded": model_loaded,
+        "model_version": artifact.get("model_version") if model_loaded else None,
     }
 
 
@@ -94,6 +102,7 @@ async def label_dataset_endpoint(
         logger.warning("Rejected upload with invalid filename: %r", file.filename)
         raise HTTPException(status_code=400, detail="Please upload a .json file.")
 
+    input_path: Optional[Path] = None
     try:
         content = await file.read()
 
@@ -115,7 +124,15 @@ async def label_dataset_endpoint(
 
     except Exception as exc:
         logger.exception("Failed to label dataset from upload '%s'", file.filename)
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(status_code=500, detail="Failed to label dataset.") from exc
+    finally:
+        # Always remove the temp upload, including on failure, so prompt history
+        # is not left behind in the system temp directory.
+        if input_path is not None:
+            try:
+                os.unlink(input_path)
+            except OSError:
+                logger.warning("Could not remove temp upload %s", input_path)
 
 
 @app.post("/train", response_model=TrainResponse)
@@ -133,4 +150,4 @@ def train(request: TrainRequest) -> TrainResponse:
         return TrainResponse(**result)
     except Exception as exc:
         logger.exception("Training failed for input %s", request.labeled_json_path)
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(status_code=500, detail="Training failed.") from exc

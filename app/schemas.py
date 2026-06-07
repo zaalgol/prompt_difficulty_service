@@ -3,7 +3,10 @@ from pydantic import BaseModel, Field
 
 
 class ClassifyRequest(BaseModel):
-    prompt: str = Field(..., min_length=1)
+    # Upper bound matches EmbeddingVectorizer.MAX_CHARS so the model classifies
+    # the same text the caller sent (the embedding path truncates beyond this),
+    # and to bound memory/CPU per request.
+    prompt: str = Field(..., min_length=1, max_length=20_000)
     metadata: Optional[Dict[str, Any]] = None
 
 

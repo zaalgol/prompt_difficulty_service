@@ -590,6 +590,15 @@ def classify_from_artifact(prompt: str, artifact: Optional[Dict[str, Any]]) -> D
     """Classify a prompt using a pre-loaded model artifact (or rule-based fallback)."""
     if artifact is None:
         label, confidence, reason, features = rule_based_label(prompt)
+        # Apply the same conservative minimum-cheap-confidence policy as the
+        # trained-model path, so the fallback cannot route a low-confidence
+        # cheap_ok decision.
+        if label == LABEL_CHEAP_OK and confidence < MIN_CHEAP_CONFIDENCE:
+            label = LABEL_ESCALATE
+            reason = (
+                "Rule-based fallback predicted cheap_ok below the conservative "
+                "confidence threshold; routing label changed to escalate."
+            )
         logger.info(
             "Classified prompt -> %s (confidence=%.4f, method=rule_based_fallback)",
             label, confidence,
@@ -604,21 +613,39 @@ def classify_from_artifact(prompt: str, artifact: Optional[Dict[str, Any]]) -> D
         }
 
     pipeline = artifact["pipeline"]
-    predicted_label = pipeline.predict([prompt])[0]
+    _, _, rule_reason, features = rule_based_label(prompt)
 
-    confidence = 0.0
-    if hasattr(pipeline, "predict_proba"):
-        classes = list(pipeline.classes_)
-        probabilities = pipeline.predict_proba([prompt])[0]
-        class_to_probability = dict(zip(classes, probabilities))
-        confidence = float(class_to_probability[predicted_label])
-    else:
-        confidence = 0.70
+    # Fail closed: any inference error (e.g. embedding network/credential
+    # failure, corrupt cache) routes to escalate rather than surfacing a 500 or
+    # accidentally returning cheap_ok.
+    try:
+        predicted_label = pipeline.predict([prompt])[0]
+        class_to_probability: Dict[str, float] = {}
+        if hasattr(pipeline, "predict_proba"):
+            classes = list(pipeline.classes_)
+            probabilities = pipeline.predict_proba([prompt])[0]
+            class_to_probability = {c: float(p) for c, p in zip(classes, probabilities)}
+            raw_probability = class_to_probability[predicted_label]
+        else:
+            raw_probability = 0.70
+    except Exception:
+        logger.exception("Model inference failed; failing closed to escalate")
+        return {
+            "label": LABEL_ESCALATE,
+            "confidence": 1.0,
+            "model_version": artifact.get("model_version", MODEL_VERSION),
+            "method": "fail_closed",
+            "reason": (
+                "Model inference failed (e.g. embedding network or credential error); "
+                "failing closed to escalate per the conservative rule."
+            ),
+            "features": {**features, "rule_based_reason": rule_reason},
+        }
 
     final_label = predicted_label
     reason = "Classified by trained lightweight model."
 
-    if predicted_label == LABEL_CHEAP_OK and confidence < MIN_CHEAP_CONFIDENCE:
+    if predicted_label == LABEL_CHEAP_OK and raw_probability < MIN_CHEAP_CONFIDENCE:
         final_label = LABEL_ESCALATE
         reason = (
             "Model predicted cheap_ok, but confidence was below the conservative threshold; "
@@ -626,10 +653,16 @@ def classify_from_artifact(prompt: str, artifact: Optional[Dict[str, Any]]) -> D
         )
         logger.info(
             "Confidence %.4f below threshold %.2f; overriding cheap_ok -> escalate",
-            confidence, MIN_CHEAP_CONFIDENCE,
+            raw_probability, MIN_CHEAP_CONFIDENCE,
         )
 
-    _, _, rule_reason, features = rule_based_label(prompt)
+    # Reported confidence must describe the FINAL routed label, not the raw
+    # prediction — otherwise an overridden escalate could report the cheap_ok
+    # probability.
+    if class_to_probability:
+        confidence = class_to_probability.get(final_label, raw_probability)
+    else:
+        confidence = raw_probability
 
     logger.info(
         "Classified prompt -> %s (confidence=%.4f, raw=%s, model=%s)",
@@ -645,6 +678,7 @@ def classify_from_artifact(prompt: str, artifact: Optional[Dict[str, Any]]) -> D
         "features": {
             **features,
             "raw_model_label": predicted_label,
+            "raw_model_probability": round(raw_probability, 4),
             "rule_based_reason": rule_reason,
             "cheap_confidence_threshold": MIN_CHEAP_CONFIDENCE,
         },

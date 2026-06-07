@@ -398,6 +398,11 @@ class EmbeddingVectorizer:
     # 8192 token limit; ~4 chars/token → 20 000 chars is safely under it
     MAX_CHARS = 20_000
 
+    # Strict per-request timeout (seconds) for the embeddings API call. Defined
+    # as a class attribute so models pickled before this field was added still
+    # inherit it after unpickling.
+    REQUEST_TIMEOUT = 30.0
+
     def __init__(
         self,
         model: str = "text-embedding-3-small",
@@ -446,7 +451,7 @@ class EmbeddingVectorizer:
                 method="POST",
             )
             try:
-                with urllib.request.urlopen(req) as resp:
+                with urllib.request.urlopen(req, timeout=self.REQUEST_TIMEOUT) as resp:
                     data = _json.loads(resp.read().decode())
             except urllib.error.HTTPError as exc:
                 detail = exc.read().decode()

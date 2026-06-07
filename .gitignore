@@ -3,5 +3,9 @@
 data
 models
 logs
+catboost_info/
+.venv/
+.env
+.pytest_cache/
 **/*.pyc
 __pycache__/

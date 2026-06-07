@@ -138,16 +138,31 @@ def rule_based_label(prompt: str) -> Tuple[str, float, str, Dict[str, Any]]:
     reasons = []
 
     if features["is_short_approval"]:
+        # Continuation/approval commands ("do it", "go ahead", "run it") inherit
+        # the difficulty and risk of the previous turn. With no conversation
+        # context available, the conservative core rule is to escalate.
         return (
-            LABEL_CHEAP_OK,
-            0.95,
-            "Very short approval / continuation command.",
+            LABEL_ESCALATE,
+            0.60,
+            "Short continuation/approval command; difficulty depends on the prior "
+            "turn, which is not available, so escalating per the conservative rule.",
             features,
         )
 
-    if features["word_count"] <= 5 and not features["has_error_signal"]:
+    # A short prompt is only "easy" when it carries no complexity signal. Prompts
+    # such as "debug", "docker", or "production deploy" are short but not simple,
+    # so the short-prompt discount must not cancel out complex-domain evidence.
+    has_complex_signal = bool(
+        features["complex_keyword_hits"]
+        or features["has_error_signal"]
+        or features["has_security_signal"]
+        or features["has_code_block"]
+        or features["has_multi_step_signal"]
+    )
+
+    if features["word_count"] <= 5 and not has_complex_signal:
         score -= 2
-        reasons.append("Very short prompt.")
+        reasons.append("Very short prompt with no complexity signal.")
 
     if features["word_count"] >= 80:
         score += 2
