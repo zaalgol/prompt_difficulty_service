@@ -6,8 +6,10 @@ that handlers are configured exactly once, regardless of import order or
 uvicorn reloads.
 """
 import logging
+import os
 import time
 from logging.handlers import RotatingFileHandler
+from pathlib import Path
 
 from app.config import LOG_FILE_PATH, LOG_LEVEL, LOGS_DIR
 
@@ -17,6 +19,28 @@ _LOG_FORMAT = "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
 _DATE_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 
 _configured = False
+
+
+class MultiprocessSafeRotatingFileHandler(RotatingFileHandler):
+    """Keep logging when Windows blocks rotation of a shared log file.
+
+    Uvicorn reload and test subprocesses can hold the same file open. Windows
+    then refuses the rename used by RotatingFileHandler. Move only the process
+    that lost the rollover race to its own rotating file instead of emitting a
+    traceback for every subsequent log record.
+    """
+
+    def doRollover(self) -> None:
+        try:
+            super().doRollover()
+        except PermissionError:
+            fallback = self._process_fallback_path()
+            self.baseFilename = str(fallback.resolve())
+            self.stream = None if self.delay else self._open()
+
+    def _process_fallback_path(self) -> Path:
+        path = Path(self.baseFilename)
+        return path.with_name(f"{path.stem}.{os.getpid()}{path.suffix}")
 
 
 def setup_logging(level: "str | int | None" = None) -> None:
@@ -34,7 +58,7 @@ def setup_logging(level: "str | int | None" = None) -> None:
     console_handler.setFormatter(formatter)
 
     # Rotate at ~5 MB, keeping the last 5 files so logs never grow unbounded.
-    file_handler = RotatingFileHandler(
+    file_handler = MultiprocessSafeRotatingFileHandler(
         LOG_FILE_PATH, maxBytes=5_000_000, backupCount=5, encoding="utf-8"
     )
     file_handler.setFormatter(formatter)

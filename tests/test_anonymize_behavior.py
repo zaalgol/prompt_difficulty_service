@@ -289,14 +289,32 @@ def test_gap_some_ssns_are_not_detected(svc):
     assert "078-05-1120" in out, "SSN is now detected — promote this to a no-leak assertion"
 
 
-def test_gap_boundary_drift_breaks_coherence(svc):
-    # KNOWN LIMITATION (COHERENCE): "Email John Smith" is captured as one PERSON
-    # span, so its vault key differs from a clean "John Smith" and the two turns
-    # get *different* fakes. Asserting the divergence documents the gap.
+def test_email_command_does_not_break_person_coherence(svc):
     sid = "gap-boundary"
-    fake_absorbed = svc.anonymize("Email John Smith.", session_id=sid)["anonymized_prompt"].rstrip(".")
-    out_clean = svc.anonymize("Please email John Smith.", session_id=sid)["anonymized_prompt"]
-    assert fake_absorbed not in out_clean, "boundary drift resolved — coherence now holds"
+    first = svc.anonymize("Email John Smith.", session_id=sid)
+    second = svc.anonymize("Please email John Smith.", session_id=sid)
+
+    assert first["anonymized_prompt"].startswith("Email ")
+    assert person_fake(first) == person_fake(second)
+
+
+def test_email_instruction_only_anonymizes_the_email_address(svc):
+    prompt = "Email me at john@acme.com about the Q3 report"
+    result = svc.anonymize(prompt)
+
+    assert result["anonymized_prompt"].startswith("Email me at ")
+    assert result["anonymized_prompt"].endswith(" about the Q3 report")
+    assert "john@acme.com" not in result["anonymized_prompt"]
+    assert [item["entity_type"] for item in result["entities"]] == ["EMAIL_ADDRESS"]
+
+
+@pytest.mark.parametrize("quarter", ["Q1", "Q2", "Q3", "Q4"])
+def test_quarter_report_labels_are_not_anonymized(svc, quarter):
+    prompt = f"Summarize the {quarter} report."
+    result = svc.anonymize(prompt)
+
+    assert result["anonymized_prompt"] == prompt
+    assert result["entities"] == []
 
 
 def test_technical_acronyms_are_not_over_detected(svc):

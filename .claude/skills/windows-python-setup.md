@@ -6,7 +6,11 @@ Use this when helping set up or debug the local Windows environment.
 
 Use Python 3.12 or 3.13.
 
-Do not use Python 3.14 with the current locked dependencies unless explicitly requested.
+Do not use Python 3.14 unless explicitly requested — some dependencies lack 3.14
+wheels and fall back to a source build (see the scikit-learn compiler error below).
+Note: only the Presidio/Faker/spaCy subset of `requirements.txt` is version-pinned;
+the rest is unpinned and there is no lock file, so environments are not fully
+reproducible.
 
 ## Setup commands
 
@@ -58,8 +62,10 @@ pip show en_core_web_lg   # or: pip list | Select-String en_core
 ```
 
 If it is listed, the install already succeeded and the 504 is just a redundant
-re-download — nothing to fix. Otherwise retry, or install the model separately via
-`python -m spacy download en_core_web_lg` (a different route than the GitHub wheel).
+re-download — nothing to fix. Otherwise just re-run `pip install -r requirements.txt`;
+it resumes from cache and only re-fetches what is missing. (The pinned model is the
+GitHub release wheel; `python -m spacy download en_core_web_lg` resolves to the same
+artifact, so it is not a way around a GitHub outage.)
 
 ### `uvicorn` not recognized
 

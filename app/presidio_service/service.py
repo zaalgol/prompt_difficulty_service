@@ -41,6 +41,39 @@ _TECHNICAL_ORGANIZATION_FALSE_POSITIVES = {
     "yaml",
 }
 
+_NON_SENSITIVE_GENERIC_NER_TERMS = {"q1", "q2", "q3", "q4"}
+_NER_COMMAND_PREFIXES = ("email",)
+
+
+def _normalize_generic_ner_result(prompt: str, item: Any) -> Optional[Any]:
+    """Remove command syntax and business labels from spaCy NER spans."""
+    metadata = item.recognition_metadata or {}
+    if metadata.get("recognizer_name") != "SpacyRecognizer":
+        return item
+
+    value = prompt[item.start:item.end]
+    normalized = value.strip().casefold()
+
+    if (
+        item.entity_type in {"ORGANIZATION", "LOCATION"}
+        and normalized in _NON_SENSITIVE_GENERIC_NER_TERMS
+    ):
+        return None
+
+    if item.entity_type in {"PERSON", "ORGANIZATION"}:
+        for prefix in _NER_COMMAND_PREFIXES:
+            if normalized == prefix:
+                return None
+            if normalized.startswith(f"{prefix} "):
+                prefix_end = item.start + value.casefold().find(prefix) + len(prefix)
+                while prefix_end < item.end and prompt[prefix_end].isspace():
+                    prefix_end += 1
+                item.start = prefix_end
+                return item
+
+    return item
+
+
 # Imported at module top so `except RedisError` works without redis installed at
 # import time; if redis-py is genuinely missing, _make_redis_client raises a clear
 # ImportError on first use instead.
@@ -309,6 +342,11 @@ class AnonymizerService:
         analyzer_results = self._analyzer.analyze(
             text=prompt, language="en", score_threshold=PRESIDIO_SCORE_THRESHOLD
         )
+        analyzer_results = [
+            normalized
+            for item in analyzer_results
+            if (normalized := _normalize_generic_ner_result(prompt, item)) is not None
+        ]
         sensitive_results = [item for item in analyzer_results if is_sensitive_result(item)]
         protected_spans = protected_context_spans(prompt)
 

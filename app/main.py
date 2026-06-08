@@ -9,8 +9,8 @@ from app.config import (
     DEFAULT_MODEL_PATH,
     MODEL_VERSION,
     PRESIDIO_WARM_ON_STARTUP,
-    PROJECT_ROOT,
     SERVICE_CONFIG_PATH,
+    resolve_model_path,
 )
 from app.logging_config import get_logger
 from app.modeling import classify_from_artifact, load_model, train_model
@@ -34,18 +34,10 @@ def _load_config() -> Dict[str, Any]:
     return {}
 
 
-def _resolve_model_path(cfg: Dict[str, Any]) -> Path:
-    raw = cfg.get("model_path")
-    if not raw:
-        return DEFAULT_MODEL_PATH
-    path = Path(raw)
-    return path if path.is_absolute() else PROJECT_ROOT / path
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     cfg = _load_config()
-    model_path = _resolve_model_path(cfg)
+    model_path = resolve_model_path(cfg)
     artifact = load_model(model_path)
 
     app.state.model_path = model_path

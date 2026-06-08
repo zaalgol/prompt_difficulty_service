@@ -38,6 +38,23 @@ DEFAULT_LGBM_EMBEDDING_OPTUNA_MODEL_PATH = MODELS_DIR / "prompt_classifier_lgbm_
 DEFAULT_ENSEMBLE_EMBEDDING_MODEL_PATH = MODELS_DIR / "prompt_classifier_ensemble_embeddings.joblib"
 DEFAULT_EMBEDDING_CACHE_PATH = DATA_DIR / "embeddings_cache.pkl"
 
+
+def resolve_model_path(cfg: dict | None = None) -> Path:
+    """Resolve the active model artifact path from service_config.json.
+
+    Shared by the API (app.main) and the CLI (scripts/classify_prompt.py) so both
+    select the same artifact. An empty/missing "model_path" falls back to the
+    key-free TF-IDF baseline (DEFAULT_MODEL_PATH); if that file is absent, the
+    downstream loader degrades to rule-based classification. Pass an already-read
+    config dict as `cfg`, or omit it to read service_config.json fresh.
+    """
+    config = _read_service_config() if cfg is None else cfg
+    raw = config.get("model_path")
+    if not raw:
+        return DEFAULT_MODEL_PATH
+    path = Path(raw)
+    return path if path.is_absolute() else PROJECT_ROOT / path
+
 # Embedding model used when training embedding-based variants. Override with
 # "embedding_model" in service_config.json.
 EMBEDDING_MODEL = _SERVICE_CONFIG.get("embedding_model", "text-embedding-3-small")

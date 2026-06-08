@@ -109,7 +109,9 @@ data/report_labeled_binary.json
 ```
 
 Default training variant (no flag to `scripts/train_model.py`): **Embeddings +
-LogReg**. It requires `OPENAI_API_KEY`; use `--use-tfidf` for the key-free
+LogReg**. It requires `OPENAI_API_KEY` — both to train and, on an embedding
+artifact, to run the service (embedding inference calls the API per prompt; a
+missing key fails closed to `escalate`). Use `--use-tfidf` for the key-free
 TF-IDF + LogReg legacy baseline. Every training run is non-destructive — it writes
 a new artifact into the `models/` folder with a UTC timestamp prefix on the
 filename (e.g. `models/2026-06-08T08-11-03Z__prompt_classifier_embeddings.joblib`),
@@ -121,7 +123,12 @@ Legacy TF-IDF + LogReg artifact path:
 models/prompt_classifier.joblib
 ```
 
-Active model is set in `service_config.json` (currently the Embeddings + LogReg model).
+Active model is set by `model_path` in `service_config.json`. The committed default
+points at the key-free TF-IDF baseline (`models/prompt_classifier.joblib`), so a
+fresh clone — where `models/` is gitignored and empty — runs rule-based until a
+model is trained and `model_path` is updated. This keeps `pip install` + run
+working with no API key. The CLI (`scripts/classify_prompt.py`) resolves the same
+path via `app.config.resolve_model_path`, so CLI and API select the same artifact.
 
 ## Labels
 

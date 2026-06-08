@@ -228,15 +228,13 @@ def test_gap_date_preservation_is_type_wide(svc):
     )
 
 
-def test_gap_person_mapping_changes_across_sentence_positions(svc):
-    """Document current coherence loss caused by differing NER boundaries."""
+def test_person_mapping_is_stable_across_sentence_positions(svc):
     session = "boundary-position"
     first = svc.anonymize("Email John Smith.", session_id=session)
     second = svc.anonymize("Please email John Smith.", session_id=session)
 
-    assert _entity_texts(first, "PERSON") != _entity_texts(second, "PERSON"), (
-        "Sentence-position coherence is fixed; promote to an equality assertion"
-    )
+    assert first["anonymized_prompt"].startswith("Email ")
+    assert _entity_texts(first, "PERSON") == _entity_texts(second, "PERSON")
 
 
 def test_output_does_not_contain_common_placeholder_failure_artifacts(svc):
