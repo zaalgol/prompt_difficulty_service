@@ -4,26 +4,32 @@ Use this when training or running the FastAPI service.
 
 ## Train model
 
-Default (TF-IDF + LogReg baseline):
+Default (Embeddings + LogReg — no flag):
 
 ```powershell
 python scripts/train_model.py --input data/report_labeled_binary.json
 ```
 
-All variants (pass one flag):
+All variants (pass one flag). The "Output path" column is the **base** name; each
+run actually writes a non-destructive copy into `models/` with a UTC timestamp
+prefix on the filename (e.g.
+`models/2026-06-08T08-11-03Z__prompt_classifier_embeddings.joblib`) so previous
+artifacts are never overwritten.
 
-| Flag | Model | Output path |
+| Flag | Model | Output base path |
 |------|-------|-------------|
-| *(none)* | TF-IDF + LogReg | `models/prompt_classifier.joblib` |
+| *(none)* | **Embeddings + LogReg (default)** | `models/prompt_classifier_embeddings.joblib` |
+| `--use-embeddings` | Embeddings + LogReg (same as default) | `models/prompt_classifier_embeddings.joblib` |
+| `--use-tfidf` | TF-IDF + LogReg (legacy baseline) | `models/prompt_classifier.joblib` |
 | `--use-lgbm` | TF-IDF + LightGBM | `models/prompt_classifier_lgbm.joblib` |
-| `--use-embeddings` | Embeddings + LogReg | `models/prompt_classifier_embeddings.joblib` |
 | `--use-lgbm-embeddings` | Embeddings + LightGBM | `models/prompt_classifier_lgbm_embeddings.joblib` |
 | `--use-lgbm-embeddings-tuned` | Embeddings + LightGBM (RandomSearch) | `models/prompt_classifier_lgbm_embeddings_tuned.joblib` |
 | `--use-lgbm-embeddings-optuna` | Embeddings + LightGBM (Optuna TPE) | `models/prompt_classifier_lgbm_embeddings_optuna.joblib` |
 | `--use-ensemble-embeddings` | Embeddings + LGBM + XGBoost + CatBoost | `models/prompt_classifier_ensemble_embeddings.joblib` |
 | `--compare` | Train all 7 and print comparison table | all of the above |
 
-Embedding variants require `OPENAI_API_KEY` to be set.
+Embedding variants require `OPENAI_API_KEY` to be set — including the no-flag
+default. Use `--use-tfidf` for a key-free run.
 
 ## Main metric
 

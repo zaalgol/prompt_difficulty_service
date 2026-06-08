@@ -103,7 +103,8 @@ def main() -> None:
     parser.add_argument("--ensemble-cv",   type=int, default=5,  help="CV folds (ensemble grid search)")
 
     group = parser.add_mutually_exclusive_group()
-    group.add_argument("--use-embeddings",            action="store_true", help="Train Embeddings + LogReg")
+    group.add_argument("--use-tfidf",                 action="store_true", help="Train TF-IDF + LogReg (legacy baseline)")
+    group.add_argument("--use-embeddings",            action="store_true", help="Train Embeddings + LogReg (default)")
     group.add_argument("--use-lgbm",                  action="store_true", help="Train TF-IDF + LightGBM")
     group.add_argument("--use-lgbm-embeddings",       action="store_true", help="Train Embeddings + LightGBM")
     group.add_argument("--use-lgbm-embeddings-tuned", action="store_true", help="Train Embeddings + LightGBM (RandomSearch tuning)")
@@ -144,10 +145,11 @@ def main() -> None:
         _print_result("TF-IDF + LightGBM", _run("tfidf_lgbm", args))
     elif args.use_lgbm_embeddings:
         _print_result("Embeddings + LightGBM", _run("emb_lgbm", args))
-    elif args.use_embeddings:
-        _print_result("Embeddings + LogReg", _run("emb_logreg", args))
-    else:
+    elif args.use_tfidf:
         _print_result("TF-IDF + LogReg", _run("tfidf_logreg", args))
+    else:
+        # Default (no flag) is Embeddings + LogReg.
+        _print_result("Embeddings + LogReg", _run("emb_logreg", args))
 
 
 if __name__ == "__main__":

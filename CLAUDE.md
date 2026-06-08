@@ -24,6 +24,28 @@ Use the project skills for detailed steps:
 - `.claude/skills/training-and-inference.md`
 - `.claude/skills/implementation-guidelines.md`
 
+## Running locally
+
+Always **activate the venv first** — `uvicorn`/`pytest`/`python` live inside it, so
+running them without activation gives "not recognized" (PowerShell) or "command
+not found" (macOS/Linux). This is the most common new-user stumble.
+
+- Windows (PowerShell): `.\.venv\Scripts\Activate.ps1` then
+  `uvicorn app.main:app --reload --port 8081`
+- macOS/Linux: `source .venv/bin/activate` then
+  `uvicorn app.main:app --reload --port 8081`
+
+The prompt shows `(.venv)` when active. To skip activation, call the venv binary
+directly: `.\.venv\Scripts\uvicorn.exe ...` (Windows) or `.venv/bin/uvicorn ...`
+(macOS/Linux). See README "Run API" and "Classify a prompt" for cross-platform
+request examples. On Windows, prefer building request JSON with `ConvertTo-Json`
+over hand-typed JSON strings to avoid brace/quote `JSON decode error`s.
+
+If `pip install -r requirements.txt` fails on the `en_core_web_lg` line with a
+GitHub `504 Gateway Time-out`, it is transient (pip downloads all wheels before
+installing, so one flaky URL aborts the run) — not a broken environment. Retry, or
+check `pip show en_core_web_lg`; if present, the model is already installed.
+
 ## Expected project structure
 
 ```text
@@ -86,7 +108,14 @@ Generated labeled dataset:
 data/report_labeled_binary.json
 ```
 
-Default trained model (TF-IDF + LogReg baseline):
+Default training variant (no flag to `scripts/train_model.py`): **Embeddings +
+LogReg**. It requires `OPENAI_API_KEY`; use `--use-tfidf` for the key-free
+TF-IDF + LogReg legacy baseline. Every training run is non-destructive — it writes
+a new artifact into the `models/` folder with a UTC timestamp prefix on the
+filename (e.g. `models/2026-06-08T08-11-03Z__prompt_classifier_embeddings.joblib`),
+never overwriting the previous one.
+
+Legacy TF-IDF + LogReg artifact path:
 
 ```text
 models/prompt_classifier.joblib
