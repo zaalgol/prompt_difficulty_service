@@ -121,7 +121,7 @@ Legacy TF-IDF + LogReg artifact path:
 models/prompt_classifier.joblib
 ```
 
-Active model is set in `service_config.json` (currently the ensemble embeddings model).
+Active model is set in `service_config.json` (currently the Embeddings + LogReg model).
 
 ## Labels
 

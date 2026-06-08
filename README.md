@@ -257,7 +257,7 @@ The model loaded at startup is set in `service_config.json`:
 
 ```json
 {
-  "model_path": "models/prompt_classifier_ensemble_embeddings.joblib",
+  "model_path": "models/2026-06-08T08-11-03Z__prompt_classifier_embeddings.joblib",
   "log_level": "INFO"
 }
 ```

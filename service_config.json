@@ -1,5 +1,5 @@
 {
-  "model_path": "models/2026-06-07T19-00-19Z__prompt_classifier_ensemble_embeddings.joblib",
+  "model_path": "models/2026-06-08T08-11-03Z__prompt_classifier_embeddings.joblib",
   "log_level": "INFO",
   "min_cheap_confidence": 0.8,
   "embedding_model": "text-embedding-3-small",

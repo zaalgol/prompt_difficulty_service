@@ -46,20 +46,24 @@ This is more important than general accuracy.
 `service_config.json` sets the model loaded at startup:
 
 ```json
-{ "model_path": "models/prompt_classifier_ensemble_embeddings.joblib" }
+{ "model_path": "models/2026-06-08T08-11-03Z__prompt_classifier_embeddings.joblib" }
 ```
 
 Change this file to switch models without code changes.
 
 ## Run API
 
+First **activate the venv**:
+
 ```powershell
+.\.venv\Scripts\Activate.ps1
 uvicorn app.main:app --reload --port 8081
 ```
 
 ## Run tests
 
 ```powershell
+.\.venv\Scripts\Activate.ps1
 pytest
 ```
 
