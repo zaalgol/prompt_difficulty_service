@@ -83,6 +83,76 @@ def test_provider_and_generic_secrets_are_removed(svc, label, prompt, secret):
 
 
 @pytest.mark.parametrize(
+    "prompt, secret",
+    [
+        ("The api key is 'asfsdfsdf'", "asfsdfsdf"),
+        ("The password is 'asfsdfsdf'", "asfsdfsdf"),
+        ("The secret is 'asfsdfsdf'", "asfsdfsdf"),
+        ('My API key was "Abcdefgh123"', "Abcdefgh123"),
+        ("Our client secret is `clientSecret987`", "clientSecret987"),
+        ("The credential is 'credential987'", "credential987"),
+        ("The passphrase is 'passphrase987'", "passphrase987"),
+        ("The signing key is 'signingKey987'", "signingKey987"),
+        ("The encryption key was 'encryptionKey987'", "encryptionKey987"),
+        ("The webhook secret is 'webhookSecret987'", "webhookSecret987"),
+        ("The access token is tokenvalue123", "tokenvalue123"),
+        ("The password was CorrectHorseBatteryStaple", "CorrectHorseBatteryStaple"),
+        ("api key: 'shortkey9'", "shortkey9"),
+        ("WEBHOOK_SECRET=webhookSecret987", "webhookSecret987"),
+        ("DATABASE_CREDENTIAL=credential987", "credential987"),
+    ],
+)
+def test_natural_language_and_spaced_secret_labels_are_removed(svc, prompt, secret):
+    result = svc.anonymize(prompt)
+
+    assert secret not in result["anonymized_prompt"]
+    assert len(result["entities"]) == 1
+    assert result["entities"][0]["entity_type"] == "SECRET"
+
+
+def test_natural_language_secret_preserves_terminal_punctuation(svc):
+    result = svc.anonymize("The password is CorrectHorseBatteryStaple.")
+
+    assert result["anonymized_prompt"] == "The password is <SECRET>."
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        "The password is required.",
+        "The token is missing.",
+        "Check whether the API key is configured.",
+        "The password is incorrect.",
+        "An API key is optional.",
+        "The access token is expired.",
+    ],
+)
+def test_secret_status_prose_is_not_anonymized(svc, prompt):
+    result = svc.anonymize(prompt)
+
+    assert result["anonymized_prompt"] == prompt
+    assert not any(item["entity_type"] == "SECRET" for item in result["entities"])
+
+
+def test_natural_language_secret_is_consistent_across_session_requests(svc):
+    session_id = "natural-language-secret"
+    first = svc.anonymize(
+        "The password is 'asfsdfsdf'.",
+        session_id=session_id,
+    )
+    second = svc.anonymize(
+        "Our password was asfsdfsdf.",
+        session_id=session_id,
+    )
+
+    first_entity = first["entities"][0]
+    replacement = first["anonymized_prompt"][
+        first_entity["start"] : first_entity["end"]
+    ]
+    assert replacement in second["anonymized_prompt"]
+
+
+@pytest.mark.parametrize(
     "scheme",
     ["postgresql", "mysql", "mongodb", "mongodb+srv", "redis", "amqp"],
 )

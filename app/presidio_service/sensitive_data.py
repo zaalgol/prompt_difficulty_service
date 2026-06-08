@@ -24,10 +24,36 @@ def _compile(pattern: str) -> re.Pattern:
 
 _SECRET_LABEL = (
     r"(?:[A-Za-z0-9]+[_-])*"
-    r"(?:api[_-]?key|apikey|secret(?:_access)?_key|client_secret|"
-    r"password|passwd|pwd|token|access_token|refresh_token|access_key_id|"
-    r"accountkey|private_token|docker_auth)"
+    r"(?:api(?:[_\s-]?key)|apikey|"
+    r"webhook[_\s-]?secret|client[_\s-]?secret|"
+    r"secret(?:(?:[_\s-]?access)?[_\s-]?key)?|"
+    r"credential(?:s)?|password|passwd|pwd|passphrase|passcode|"
+    r"token|auth[_\s-]?token|access[_\s-]?token|refresh[_\s-]?token|"
+    r"private[_\s-]?token|access[_\s-]?key[_\s-]?id|"
+    r"account[_\s-]?key|private[_\s-]?key|signing[_\s-]?key|"
+    r"encryption[_\s-]?key|auth[_\s-]?code|docker[_\s-]?auth)"
 )
+
+_NATURAL_SECRET_CONTEXT = (
+    rf"\b(?:the\s+|my\s+|our\s+|your\s+)?{_SECRET_LABEL}"
+    r"\s+(?:is|was)\s+"
+)
+
+_NON_SECRET_STATUS_VALUES = {
+    "available",
+    "configured",
+    "disabled",
+    "enabled",
+    "expired",
+    "incorrect",
+    "invalid",
+    "missing",
+    "optional",
+    "redacted",
+    "required",
+    "unchanged",
+    "unknown",
+}
 
 _CONNECTION_URI = (
     r"\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|rediss|"
@@ -43,6 +69,10 @@ _PROTECTED_CONTEXT_PATTERNS = [
         rf"[\"']?{_SECRET_LABEL}[\"']?\s*[:=]\s*"
         r"(?:\"[^\"\r\n]*\"|'[^'\r\n]*'|\$\{[^}\r\n]+\}|"
         r"<[^>\r\n]+>|[^\s,;#}\r\n]+)"
+    ),
+    _compile(
+        _NATURAL_SECRET_CONTEXT
+        + r"(?:\"[^\"\r\n]*\"|'[^'\r\n]*'|`[^`\r\n]*`|[^\s,;#}\r\n]+)"
     ),
     _compile(r"\bAuthorization\s*:\s*(?:Bearer|Basic)\s+[^\s,;]+"),
     _compile(
@@ -146,6 +176,27 @@ _PATTERNS = [
         group="secret",
     ),
     _SecretPattern(
+        "natural_language_quoted_secret",
+        "SECRET",
+        _compile(
+            _NATURAL_SECRET_CONTEXT
+            + r"(?P<quote>[\"'`])(?P<secret>[^\"'`\r\n]{8,})(?P=quote)"
+        ),
+        group="secret",
+        score=0.95,
+    ),
+    _SecretPattern(
+        "natural_language_secret",
+        "SECRET",
+        _compile(
+            _NATURAL_SECRET_CONTEXT
+            + r"(?P<secret>[A-Za-z0-9_./+=:@!-]{8,}?)"
+            r"(?=$|[\s,;)\]}]|[.!?](?:\s|$))"
+        ),
+        group="secret",
+        score=0.9,
+    ),
+    _SecretPattern(
         "labeled_secret",
         "SECRET",
         _compile(
@@ -193,11 +244,26 @@ class SensitiveDataRecognizer(EntityRecognizer):
                 continue
             for match in item.regex.finditer(text):
                 start, end = match.span(item.group) if item.group else match.span()
-                if item.name == "labeled_secret":
+                if item.name == "natural_language_secret":
+                    while end > start and text[end - 1] in ".,?;:":
+                        end -= 1
+                if item.name in {
+                    "labeled_secret",
+                    "natural_language_quoted_secret",
+                    "natural_language_secret",
+                }:
                     candidate = text[start:end]
                     if end < len(text) and text[end] == "(":
                         continue
                     if candidate.casefold() in {"os.getenv", "env.get", "process.env"}:
+                        continue
+                    if (
+                        item.name.startswith("natural_language_")
+                        and (
+                            len(candidate.strip()) < 8
+                            or candidate.strip().casefold() in _NON_SECRET_STATUS_VALUES
+                        )
+                    ):
                         continue
                 if start == end or any(start < other_end and end > other_start for other_start, other_end in claimed):
                     continue

@@ -31,7 +31,7 @@ at runtime (see [Active model](#active-model)).
 Windows (PowerShell):
 
 ```powershell
-py -3.12 -m venv .venv
+py -3.14 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 ```
@@ -39,7 +39,7 @@ pip install -r requirements.txt
 Linux / macOS:
 
 ```bash
-python3.12 -m venv .venv
+python3.14 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 ```
@@ -330,8 +330,10 @@ point a model (or an agent acting on its output) at a real host, mailbox, or pho
 On top of Presidio's NER, a custom recognizer catches **developer secrets** —
 private keys, AWS/OpenAI/Anthropic/GitHub/GitLab/Slack/Stripe/Google keys, JWTs,
 `Authorization`/`Bearer` headers, session cookies, and credentialed connection URIs
-(`postgres://user:pass@host`). The secret value is replaced with an opaque tag while
-the surrounding syntax is preserved, so only the secret itself is removed:
+(`postgres://user:pass@host`). It also recognizes contextual natural-language
+forms such as `The API key is '...'`, `The password was ...`, and
+`The secret is '...'`. The secret value is replaced with an opaque tag while the
+surrounding syntax is preserved, so only the secret itself is removed:
 
 ```bash
 curl -X POST http://localhost:8081/anonymize -H "Content-Type: application/json" \
