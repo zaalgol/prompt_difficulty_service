@@ -299,9 +299,8 @@ def test_gap_boundary_drift_breaks_coherence(svc):
     assert fake_absorbed not in out_clean, "boundary drift resolved — coherence now holds"
 
 
-def test_gap_acronyms_are_over_detected(svc):
-    # KNOWN LIMITATION (OVER-DETECT): "YAML" is not PII, but NER tags it
-    # ORGANIZATION and replaces it — needless mutation of non-sensitive text.
-    result = svc.anonymize("Please reformat this YAML file.")
-    assert any(e["entity_type"] == "ORGANIZATION" for e in result["entities"]), \
-        "YAML no longer over-detected — tighten or drop this test"
+def test_technical_acronyms_are_not_over_detected(svc):
+    prompt = "Please reformat this YAML file."
+    result = svc.anonymize(prompt)
+    assert result["anonymized_prompt"] == prompt
+    assert not any(e["entity_type"] == "ORGANIZATION" for e in result["entities"])

@@ -24,6 +24,23 @@ from app.presidio_service.sensitive_data import (
 
 logger = get_logger(__name__)
 
+_TECHNICAL_ORGANIZATION_FALSE_POSITIVES = {
+    "api",
+    "gcp",
+    "http",
+    "https",
+    "ip",
+    "json",
+    "jwt",
+    "sql",
+    "ssh",
+    "ssl",
+    "tls",
+    "uri",
+    "url",
+    "yaml",
+}
+
 # Imported at module top so `except RedisError` works without redis installed at
 # import time; if redis-py is genuinely missing, _make_redis_client raises a clear
 # ImportError on first use instead.
@@ -313,7 +330,8 @@ class AnonymizerService:
                 and not overlaps(item.start, item.end, protected_spans)
                 and not (
                     item.entity_type == "ORGANIZATION"
-                    and prompt[item.start:item.end].strip(" =:").casefold() == "api"
+                    and prompt[item.start:item.end].strip(" =:").casefold()
+                    in _TECHNICAL_ORGANIZATION_FALSE_POSITIVES
                 )
                 and not (
                     item.entity_type == "DATE_TIME"
