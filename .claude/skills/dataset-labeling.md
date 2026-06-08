@@ -44,7 +44,17 @@ Each prompt item should include:
 
 ## Command
 
+Windows (PowerShell) — **activate venv first**:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+python scripts/label_dataset.py --input data/report.json --output data/report_labeled_binary.json
+```
+
+Linux / macOS:
+
 ```bash
+source .venv/bin/activate
 python scripts/label_dataset.py --input data/report.json --output data/report_labeled_binary.json
 ```
 
