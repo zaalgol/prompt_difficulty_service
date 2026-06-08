@@ -10,9 +10,10 @@ catboost
 xgboost
 pytest
 httpx
-# Redis backs the /anonymize per-session consistency vault (original->fake
-# mappings). fakeredis provides an in-process Redis for the test suite, so no
-# server is required to run `pytest`.
+# Optional Redis backend for the /anonymize per-session consistency vault
+# (original->fake mappings); selected with vault_backend="redis". The default
+# in-memory backend needs neither. fakeredis provides an in-process Redis so the
+# Redis-backend tests run without a server.
 redis
 fakeredis
 # Pinned: PII detection/replacement behavior depends on these exact versions, so

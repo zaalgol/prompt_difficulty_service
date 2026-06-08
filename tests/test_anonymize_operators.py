@@ -18,7 +18,10 @@ from app.presidio_service.operators import (  # noqa: E402
     ConsistentFakerAnonymizer,
     _fake_value,
 )
-from app.presidio_service.service import SessionVault  # noqa: E402
+from app.presidio_service.service import (  # noqa: E402
+    InMemorySessionVault,
+    SessionVault,
+)
 
 
 def _vault(**kwargs):
@@ -190,3 +193,56 @@ def test_vault_is_thread_safe():
     for t in threads:
         t.join()
     assert not errors
+
+
+# ── InMemorySessionVault (default backend: load / save / delete) ──────────────
+
+def test_memory_vault_persists_across_load_save():
+    v = InMemorySessionVault()
+    mapping = v.load("s1")
+    assert mapping == {}
+    mapping.setdefault("PERSON", {})["john smith"] = "Fake Name"
+    v.save("s1", mapping)
+    reloaded = v.load("s1")
+    assert reloaded == {"PERSON": {"john smith": "Fake Name"}}
+    # load returns a detached copy, not the stored object.
+    assert reloaded is not mapping
+
+
+def test_memory_vault_sessions_are_isolated():
+    v = InMemorySessionVault()
+    a = v.load("a")
+    a.setdefault("PERSON", {})["x"] = "A"
+    v.save("a", a)
+    assert v.load("b") == {}
+
+
+def test_memory_vault_no_session_is_ephemeral():
+    v = InMemorySessionVault()
+    first = v.load(None)
+    first.setdefault("PERSON", {})["x"] = "X"
+    v.save(None, first)  # ephemeral save is a no-op
+    assert v.load(None) == {}
+
+
+def test_memory_vault_delete_removes_session():
+    v = InMemorySessionVault()
+    m = v.load("s1")
+    m.setdefault("PERSON", {})["x"] = "Y"
+    v.save("s1", m)
+    v.delete("s1")
+    assert v.load("s1") == {}
+
+
+def test_memory_vault_evicts_least_recently_used_session():
+    v = InMemorySessionVault(max_sessions=2)
+    for sid in ("a", "b", "c"):  # inserting "c" evicts "a" (LRU)
+        m = v.load(sid)
+        m.setdefault("PERSON", {})["x"] = sid
+        v.save(sid, m)
+    assert v.load("a") == {}
+    assert v.load("c") == {"PERSON": {"x": "c"}}
+
+
+def test_memory_vault_ping_never_raises():
+    InMemorySessionVault().ping()  # in-memory backend is always available

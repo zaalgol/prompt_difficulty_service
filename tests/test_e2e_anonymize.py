@@ -6,11 +6,9 @@ Run with:
 Skipped when the Presidio stack (or its spaCy model) is not installed, since the
 server subprocess shares this venv and could not anonymize without it.
 """
-import os
 import subprocess
 import sys
 import tempfile
-import threading
 import time
 from pathlib import Path
 
@@ -21,88 +19,17 @@ pytest.importorskip("presidio_analyzer")
 pytest.importorskip("presidio_anonymizer")
 pytest.importorskip("faker")
 
-from app.config import REDIS_URL  # noqa: E402
-from app.presidio_service.service import _KEY_PREFIX  # noqa: E402
-
 BASE_URL = "http://127.0.0.1:8766"
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
-# The server subprocess shares this venv but NOT the in-process fakeredis patch
-# (that only swaps the client object within this process), so cross-session
-# coherence here needs a Redis the subprocess can reach over TCP. Ephemeral
-# requests (no session_id) never touch Redis.
-_E2E_SESSION_PREFIX = "e2e-"
-
-
-def _real_redis():
-    """Return a connected redis client for REDIS_URL, or None if unreachable."""
-    try:
-        import redis
-
-        client = redis.from_url(REDIS_URL, decode_responses=True, socket_connect_timeout=0.5)
-        client.ping()
-        return client
-    except Exception:
-        return None
-
-
-@pytest.fixture(scope="module")
-def redis_url():
-    """A Redis URL the server subprocess can connect to, plus a client for cleanup.
-
-    Prefers a real Redis at REDIS_URL; if none is running, starts an in-process
-    fakeredis TCP server (real RESP over a socket) so the session-coherence tests
-    run without anyone installing Redis. Session keys are deleted on teardown.
-    """
-    import redis
-
-    real = _real_redis()
-    if real is not None:
-        try:
-            yield REDIS_URL, real
-        finally:
-            keys = list(real.scan_iter(match=f"{_KEY_PREFIX}{_E2E_SESSION_PREFIX}*"))
-            if keys:
-                real.delete(*keys)
-        return
-
-    from fakeredis import TcpFakeServer
-
-    tcp_server = TcpFakeServer(("127.0.0.1", 0))
-    host, port = tcp_server.server_address
-    thread = threading.Thread(target=tcp_server.serve_forever, daemon=True)
-    thread.start()
-
-    url = f"redis://{host}:{port}/0"
-    client = redis.from_url(url, decode_responses=True)
-    deadline = time.time() + 5
-    while time.time() < deadline:
-        try:
-            client.ping()
-            break
-        except Exception:
-            time.sleep(0.05)
-    try:
-        yield url, client
-    finally:
-        try:
-            client.flushall()
-        except Exception:
-            pass
-        tcp_server.shutdown()
-        tcp_server.server_close()
-
-
-@pytest.fixture(scope="module")
-def vault_redis(redis_url):
-    """The redis client backing the running server's vault (for session tests)."""
-    return redis_url[1]
+# The default vault backend is in-memory, so cross-request session coherence holds
+# within this single subprocess (one process, one vault) without any external
+# service. The Redis backend is covered by the in-process unit tests.
 
 
 @pytest.fixture(scope="module", autouse=True)
-def server(redis_url):
+def server():
     """Start uvicorn in a subprocess and wait until it is accepting requests."""
-    url, _client = redis_url
     # Route server output to a real file, not a PIPE. Presidio/spaCy log heavily on
     # model load; an undrained PIPE would fill its OS buffer and deadlock the server
     # mid-request. A file never blocks the writer, and we can read it on failure.
@@ -117,9 +44,6 @@ def server(redis_url):
         cwd=PROJECT_ROOT,
         stdout=log_file,
         stderr=subprocess.STDOUT,
-        # Point the subprocess at the resolved vault backend (real Redis or the
-        # in-process fakeredis TCP server) so session coherence works end-to-end.
-        env={**os.environ, "REDIS_URL": url},
     )
 
     def _server_log() -> str:
@@ -190,7 +114,7 @@ def test_coherence_within_a_single_prompt():
     assert len(persons) == 2
 
 
-def test_coherence_across_requests_same_session(vault_redis):
+def test_coherence_across_requests_same_session():
     session = "e2e-session-coherence"
     r1 = anonymize("Please email John Smith.", session_id=session)
     r2 = anonymize("Did John Smith reply yet?", session_id=session)
@@ -200,7 +124,7 @@ def test_coherence_across_requests_same_session(vault_redis):
     assert fake_name in r2.json()["anonymized_prompt"]
 
 
-def test_different_sessions_are_isolated(vault_redis):
+def test_different_sessions_are_isolated():
     r1 = anonymize("Please email John Smith.", session_id="e2e-sess-a")
     r2 = anonymize("Please email John Smith.", session_id="e2e-sess-b")
     # Both anonymize the name; mappings are per-session (values may differ).

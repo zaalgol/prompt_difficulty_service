@@ -86,6 +86,35 @@ def test_vault_expired_session_comes_back_empty():
     assert v.load("a") == {}
 
 
+def test_make_vault_memory_is_default(monkeypatch):
+    import app.presidio_service.service as svc
+
+    monkeypatch.setattr(svc, "VAULT_BACKEND", "memory")
+    assert isinstance(svc._make_vault(), svc.InMemorySessionVault)
+
+
+def test_make_vault_redis_when_configured(monkeypatch):
+    # _make_redis_client is patched to fakeredis by the session-wide conftest.
+    import app.presidio_service.service as svc
+
+    monkeypatch.setattr(svc, "VAULT_BACKEND", "redis")
+    assert isinstance(svc._make_vault(), svc.SessionVault)
+
+
+def test_make_vault_unknown_falls_back_to_memory(monkeypatch):
+    import app.presidio_service.service as svc
+
+    monkeypatch.setattr(svc, "VAULT_BACKEND", "bogus")
+    assert isinstance(svc._make_vault(), svc.InMemorySessionVault)
+
+
+def test_service_uses_configured_backend(monkeypatch):
+    import app.presidio_service.service as svc
+
+    monkeypatch.setattr(svc, "VAULT_BACKEND", "memory")
+    assert isinstance(svc.AnonymizerService()._vault, svc.InMemorySessionVault)
+
+
 def test_per_type_entry_cap_is_enforced(monkeypatch):
     monkeypatch.setattr(
         "app.presidio_service.operators.PRESIDIO_MAX_ENTRIES_PER_TYPE", 3
@@ -172,6 +201,8 @@ def test_redis_backend_unavailable_fails_closed_503(client):
 def test_health_reports_anonymizer_status(client):
     data = client.get("/health").json()
     assert "anonymizer" in data
-    assert set(data["anonymizer"]) == {"engines_loaded", "nlp_model"}
+    assert set(data["anonymizer"]) == {"engines_loaded", "nlp_model", "vault_backend"}
     # Lazy by default: engines are not loaded just because the process is up.
     assert data["anonymizer"]["engines_loaded"] is False
+    # The configured vault backend is reported (in-memory by default).
+    assert data["anonymizer"]["vault_backend"] == "memory"

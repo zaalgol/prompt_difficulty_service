@@ -33,12 +33,12 @@ separate `spacy download` step is needed.
 To use a smaller model instead, run `python -m spacy download en_core_web_sm` and
 set `"presidio_nlp_model": "en_core_web_sm"` in `service_config.json`.
 
-The `/anonymize` endpoint stores its per-session consistency vault in Redis. For
-cross-request coherence (requests sharing a `session_id`), point the service at a
-Redis instance via the `REDIS_URL` env var or `redis_url` in `service_config.json`
-(default `redis://localhost:6379/0`). `/classify` and one-shot `/anonymize` calls
-(no `session_id`) do not need Redis. The test suite uses an in-process `fakeredis`,
-so no server is required to run `pytest`.
+The `/anonymize` endpoint keeps a per-session consistency vault whose backend is
+chosen by `vault_backend` in `service_config.json` (or the `VAULT_BACKEND` env
+var): `"memory"` (default, in-process) or `"redis"`. Redis gives cross-process,
+restart-surviving coherence — point the service at it via the `REDIS_URL` env var
+or `redis_url` in `service_config.json` (default `redis://localhost:6379/0`).
+`/classify` and one-shot `/anonymize` calls (no `session_id`) never use the vault.
 
 ## Run API
 
@@ -149,23 +149,27 @@ Anonymizer notes:
 - Replacements for addressable types use **reserved, non-routable** values
   (`example.com`, `192.0.2.0/24` documentation IPs, `(555) 555-01xx` numbers) so the
   output can never point a model or agent at a real host, mailbox, or phone line.
-- Session mappings are stored in **Redis** (one key per `session_id`, holding the
-  original→fake map), so coherence survives across worker processes and restarts.
-  The original PII lives only in Redis — never returned to callers or logged. Each
-  session key carries a TTL refreshed on access (`presidio_session_ttl_seconds`),
-  and each entity type keeps at most `presidio_max_entries_per_type` mappings.
-  Requests **without** a `session_id` never touch Redis (intra-prompt coherence only).
-- If Redis is unreachable, a request **with** a `session_id` fails closed with
-  **503** rather than silently losing coherence. Configure the connection with the
-  `REDIS_URL` env var (or `redis_url` in `service_config.json`); default
-  `redis://localhost:6379/0`.
-- `/health` reports anonymizer readiness under `anonymizer.engines_loaded`. Engines
-  load lazily on first `/anonymize`; set `"presidio_warm_on_startup": true` in
-  `service_config.json` to load them at startup instead.
+- The session vault has two backends, chosen by `vault_backend`:
+  - **`memory`** (default): mappings live in an in-process dict — single-process
+    and lost on restart, no external service. The number of sessions is
+    LRU-bounded by `presidio_max_sessions`.
+  - **`redis`**: one key per `session_id` holds the original→fake map, so
+    coherence survives across worker processes and restarts. Each key carries a
+    TTL refreshed on access (`presidio_session_ttl_seconds`). If Redis is
+    unreachable, a `session_id` request fails closed with **503** rather than
+    silently losing coherence.
+  Either way the original PII stays server-side — never returned to callers or
+  logged — and each entity type keeps at most `presidio_max_entries_per_type`
+  mappings. Requests **without** a `session_id` never use the vault.
+- `/health` reports anonymizer readiness under `anonymizer.engines_loaded` and the
+  active backend under `anonymizer.vault_backend`. Engines load lazily on first
+  `/anonymize`; set `"presidio_warm_on_startup": true` in `service_config.json` to
+  load them at startup instead.
 
 Tunable in `service_config.json`: `presidio_nlp_model`, `presidio_score_threshold`,
-`redis_url`, `redis_socket_timeout`, `presidio_session_ttl_seconds`,
-`presidio_max_entries_per_type`, `presidio_warm_on_startup`.
+`vault_backend`, `presidio_max_sessions`, `redis_url`, `redis_socket_timeout`,
+`presidio_session_ttl_seconds`, `presidio_max_entries_per_type`,
+`presidio_warm_on_startup`.
 
 ## Logging
 

@@ -1,14 +1,17 @@
-"""Anonymizer service: Presidio engines + Redis-backed per-session vault."""
+"""Anonymizer service: Presidio engines + a per-session vault (memory or Redis)."""
 import json
 import threading
+from collections import OrderedDict
 from typing import Any, Dict, List, Optional
 
 from app.config import (
+    PRESIDIO_MAX_SESSIONS,
     PRESIDIO_NLP_MODEL,
     PRESIDIO_SCORE_THRESHOLD,
     PRESIDIO_SESSION_TTL_SECONDS,
     REDIS_SOCKET_TIMEOUT,
     REDIS_URL,
+    VAULT_BACKEND,
 )
 from app.logging_config import get_logger
 from app.presidio_service.operators import ConsistentFakerAnonymizer
@@ -51,6 +54,67 @@ def _make_redis_client() -> Any:
         socket_connect_timeout=REDIS_SOCKET_TIMEOUT,
         socket_timeout=REDIS_SOCKET_TIMEOUT,
     )
+
+
+def _make_vault() -> Any:
+    """Build the per-session vault for the configured backend (VAULT_BACKEND)."""
+    if VAULT_BACKEND == "redis":
+        logger.info("Anonymizer vault backend: redis (%s)", REDIS_URL)
+        return SessionVault(_make_redis_client())
+    if VAULT_BACKEND != "memory":
+        logger.warning(
+            "Unknown vault_backend %r; falling back to in-memory", VAULT_BACKEND
+        )
+    logger.info("Anonymizer vault backend: memory")
+    return InMemorySessionVault()
+
+
+class InMemorySessionVault:
+    """Process-local per-session vault with the same load/save/delete/ping
+    interface as the Redis vault, but mappings live in memory.
+
+    Single-process and lost on restart (so coherence does not survive across
+    workers/replicas), but needs no external service. The number of retained
+    sessions is LRU-bounded; per-entity-type entries are capped by the operator.
+    load() returns a detached copy and save() stores a copy, so the operator
+    mutates a private dict and concurrent same-session requests cannot corrupt
+    each other (last write wins, matching the Redis vault's contract).
+    """
+
+    def __init__(self, *, max_sessions: int = PRESIDIO_MAX_SESSIONS) -> None:
+        self._lock = threading.Lock()
+        self._max_sessions = max(1, max_sessions)
+        self._sessions: "OrderedDict[str, Dict[str, Dict[str, str]]]" = OrderedDict()
+
+    @staticmethod
+    def _copy(mapping: Dict[str, Dict[str, str]]) -> Dict[str, Dict[str, str]]:
+        return {entity_type: dict(values) for entity_type, values in mapping.items()}
+
+    def ping(self) -> None:
+        """No-op: the in-memory backend is always available."""
+
+    def load(self, session_id: Optional[str]) -> Dict[str, Dict[str, str]]:
+        if not session_id:
+            return {}
+        with self._lock:
+            mapping = self._sessions.get(session_id)
+            if mapping is None:
+                return {}
+            self._sessions.move_to_end(session_id)  # mark recently used
+            return self._copy(mapping)
+
+    def save(self, session_id: Optional[str], mapping: Dict[str, Dict[str, str]]) -> None:
+        if not session_id or not mapping:
+            return
+        with self._lock:
+            self._sessions[session_id] = self._copy(mapping)
+            self._sessions.move_to_end(session_id)
+            while len(self._sessions) > self._max_sessions:
+                self._sessions.popitem(last=False)  # evict least-recently-used
+
+    def delete(self, session_id: str) -> None:
+        with self._lock:
+            self._sessions.pop(session_id, None)
 
 
 class SessionVault:
@@ -136,11 +200,11 @@ class AnonymizerService:
     cheap and does not require Presidio to be installed unless /anonymize is hit.
     """
 
-    def __init__(self, redis_client: Any = None) -> None:
-        # The client is created eagerly but does not connect until first use, so a
-        # classify-only deployment still starts without a running Redis.
-        client = redis_client if redis_client is not None else _make_redis_client()
-        self._vault = SessionVault(client)
+    def __init__(self, vault: Any = None) -> None:
+        # The vault is chosen by VAULT_BACKEND (memory by default). For the Redis
+        # backend the client is created here but does not connect until first use,
+        # so a classify-only deployment still starts without a running Redis.
+        self._vault = vault if vault is not None else _make_vault()
         self._lock = threading.Lock()
         self._analyzer = None
         self._anonymizer = None
@@ -161,6 +225,7 @@ class AnonymizerService:
         return {
             "engines_loaded": self.engines_loaded,
             "nlp_model": PRESIDIO_NLP_MODEL,
+            "vault_backend": VAULT_BACKEND,
         }
 
     def warmup(self) -> None:
