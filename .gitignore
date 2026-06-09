@@ -6,6 +6,7 @@
 
 data
 models
+models_old
 logs
 catboost_info/
 

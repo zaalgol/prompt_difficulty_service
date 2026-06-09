@@ -1,5 +1,5 @@
 {
-  "model_path": "models/prompt_classifier.joblib",
+  "model_path": "models/2026-06-08T18-57-24Z__prompt_classifier_ensemble_embeddings.joblib",
   "log_level": "INFO",
   "min_cheap_confidence": 0.8,
   "vault_backend": "memory"
