@@ -278,6 +278,20 @@ Response (fake values are random — only their *consistency* is guaranteed):
 Pass the same `session_id` on every related request; a repeated value gets the same
 fake each time:
 
+Windows (PowerShell):
+
+```powershell
+$body = @{ prompt = "Email alice@corp.com to confirm"; session_id = "thread-42" } | ConvertTo-Json
+Invoke-RestMethod -Uri "http://localhost:8081/anonymize" -Method Post -ContentType "application/json" -Body $body
+# -> "... harriskimberly@example.com to confirm"
+
+$body = @{ prompt = "Did alice@corp.com reply yet?"; session_id = "thread-42" } | ConvertTo-Json
+Invoke-RestMethod -Uri "http://localhost:8081/anonymize" -Method Post -ContentType "application/json" -Body $body
+# -> "Did harriskimberly@example.com reply yet?"   (same fake as the first request)
+```
+
+Linux / macOS (curl):
+
 ```bash
 curl -s -X POST http://localhost:8081/anonymize -H "Content-Type: application/json" \
   -d '{"prompt": "Email alice@corp.com to confirm", "session_id": "thread-42"}'
