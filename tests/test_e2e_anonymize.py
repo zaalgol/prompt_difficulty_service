@@ -96,6 +96,8 @@ def test_anonymize_returns_200_and_shape():
     assert isinstance(data["anonymized_prompt"], str)
     assert isinstance(data["entities"], list)
     assert data["preserved_entity_types"] == []
+    assert isinstance(data["elapsed_time_ms"], float)
+    assert data["elapsed_time_ms"] >= 0
     for ent in data["entities"]:
         assert set(ent) == {"entity_type", "start", "end", "action"}
 

@@ -79,7 +79,15 @@ def test_classify_returns_200():
 
 def test_classify_response_has_required_fields():
     data = classify("What is 2+2?").json()
-    for field in ("label", "confidence", "model_version", "method", "reason", "features"):
+    for field in (
+        "label",
+        "confidence",
+        "model_version",
+        "method",
+        "reason",
+        "features",
+        "elapsed_time_ms",
+    ):
         assert field in data, f"Missing field: {field}"
 
 

@@ -1,4 +1,5 @@
 import json
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -8,7 +9,8 @@ from fastapi import FastAPI, HTTPException, Request
 from app.config import (
     DEFAULT_MODEL_PATH,
     MODEL_VERSION,
-    PRESIDIO_WARM_ON_STARTUP,
+    RUN_ANONYMIZE_DUMMY_ON_STARTUP,
+    RUN_CLASSIFY_DUMMY_ON_STARTUP,
     SERVICE_CONFIG_PATH,
     resolve_model_path,
 )
@@ -26,12 +28,81 @@ from app.schemas import (
 
 logger = get_logger(__name__)
 
+_CLASSIFIER_WARMUP_PROMPT = (
+    "Classify this harmless startup prompt to initialize local inference."
+)
+_ANONYMIZER_WARMUP_PROMPT = (
+    "Contact Startup Example at startup@example.com using password "
+    "'warmup-value-12345'."
+)
+
 
 def _load_config() -> Dict[str, Any]:
     if SERVICE_CONFIG_PATH.exists():
         with SERVICE_CONFIG_PATH.open("r", encoding="utf-8") as f:
             return json.load(f)
     return {}
+
+
+def _elapsed_time_ms(started_at: float) -> float:
+    return round((time.perf_counter() - started_at) * 1000, 3)
+
+
+def _warmup_classifier(artifact: Optional[Dict[str, Any]]) -> None:
+    """Initialize local embedding and classifier inference before readiness.
+
+    Loading a PyTorch model does not initialize every CPU kernel and thread pool.
+    Run the same predict + predict_proba path used by /classify so that one-time
+    work happens during startup. OpenAI artifacts are deliberately excluded to
+    avoid making a paid network request for a synthetic prompt.
+    """
+    if not artifact:
+        return
+
+    pipeline = artifact.get("pipeline")
+    if hasattr(pipeline, "warm_inference") and pipeline.warm_inference(
+        _CLASSIFIER_WARMUP_PROMPT
+    ):
+        logger.info("Local classifier inference warmup complete")
+
+
+def _warmup_anonymizer(service: AnonymizerService) -> None:
+    """Run the complete analyzer + anonymizer path before readiness.
+
+    No session id is supplied, so fake values generated for this synthetic
+    prompt are ephemeral and never enter the memory or Redis session vault.
+    """
+    service.anonymize(
+        prompt=_ANONYMIZER_WARMUP_PROMPT,
+        session_id=None,
+        preserve_entity_types=[],
+        auto_preserve=False,
+    )
+    logger.info("Anonymizer inference warmup complete")
+
+
+def _run_startup_dummy_requests(
+    artifact: Optional[Dict[str, Any]],
+    anonymizer_service: AnonymizerService,
+) -> None:
+    if RUN_CLASSIFY_DUMMY_ON_STARTUP:
+        try:
+            _warmup_classifier(artifact)
+        except Exception as exc:
+            # Request-time inference fails closed to escalate, so startup should
+            # remain available under the same degraded behavior.
+            logger.warning(
+                "Classifier warmup failed (%s); requests will initialize lazily",
+                type(exc).__name__,
+            )
+
+    if RUN_ANONYMIZE_DUMMY_ON_STARTUP:
+        try:
+            _warmup_anonymizer(anonymizer_service)
+        except Exception:
+            # Keep classification available when the optional anonymization
+            # stack fails; /anonymize will surface the dependency error.
+            logger.warning("Anonymizer warmup failed; engines will load on first use")
 
 
 @asynccontextmanager
@@ -42,18 +113,8 @@ async def lifespan(app: FastAPI):
 
     app.state.model_path = model_path
     app.state.artifact = artifact
-    # Lightweight to construct; the spaCy/Presidio engines load lazily on the
-    # first /anonymize request so startup stays fast. Set presidio_warm_on_startup
-    # to load them now (deployments that must not be "ready" until anonymization
-    # can actually run).
     anonymizer_service = AnonymizerService()
-    if PRESIDIO_WARM_ON_STARTUP:
-        try:
-            anonymizer_service.warmup()
-        except Exception:
-            # Never block startup on the optional NLP load; /anonymize still
-            # surfaces a clear error and /health reports engines as not loaded.
-            logger.warning("Anonymizer warmup failed; engines will load on first use")
+    _run_startup_dummy_requests(artifact, anonymizer_service)
     app.state.anonymizer_service = anonymizer_service
 
     if artifact:
@@ -104,10 +165,12 @@ def health(request: Request) -> dict:
 
 @app.post("/classify", response_model=ClassifyResponse)
 def classify(request: Request, body: ClassifyRequest) -> ClassifyResponse:
+    started_at = time.perf_counter()
     logger.debug("Classify request: %d chars", len(body.prompt))
     result = classify_from_artifact(
         body.prompt, request.app.state.artifact, body.total_input_tokens,
     )
+    result["elapsed_time_ms"] = _elapsed_time_ms(started_at)
     return ClassifyResponse(**result)
 
 
@@ -119,6 +182,7 @@ def anonymize(request: Request, body: AnonymizeRequest) -> AnonymizeResponse:
     Entity types in preserve_entity_types are kept unchanged so the answer stays
     correct (semantics). The prompt text is never logged.
     """
+    started_at = time.perf_counter()
     service: AnonymizerService = request.app.state.anonymizer_service
     try:
         result = service.anonymize(
@@ -147,6 +211,7 @@ def anonymize(request: Request, body: AnonymizeRequest) -> AnonymizeResponse:
         logger.error("Anonymization failed (%s)", type(exc).__name__)
         raise HTTPException(status_code=500, detail="Anonymization failed.") from exc
 
+    result["elapsed_time_ms"] = _elapsed_time_ms(started_at)
     return AnonymizeResponse(**result)
 
 

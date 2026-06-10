@@ -29,7 +29,13 @@ from app.config import (
     DEFAULT_LGBM_EMBEDDING_TUNED_MODEL_PATH,
     DEFAULT_LGBM_MODEL_PATH,
     DEFAULT_MODEL_PATH,
+    EMBEDDING_LOCAL_BATCH_SIZE,
+    EMBEDDING_LOCAL_DEVICE,
     EMBEDDING_MODEL,
+    EMBEDDING_MODEL_REVISION,
+    EMBEDDING_PROVIDER,
+    EMBEDDING_TASK_PREFIX,
+    EMBEDDING_TRUST_REMOTE_CODE,
     LABEL_CHEAP_OK,
     LABEL_ESCALATE,
     MIN_CHEAP_CONFIDENCE,
@@ -39,6 +45,19 @@ from app.labeling import rule_based_label
 from app.logging_config import get_logger
 
 logger = get_logger(__name__)
+
+
+def _embedding_vectorizer(cache_path: str | Path) -> EmbeddingVectorizer:
+    return EmbeddingVectorizer(
+        model=EMBEDDING_MODEL,
+        cache_path=cache_path,
+        provider=EMBEDDING_PROVIDER,
+        task_prefix=EMBEDDING_TASK_PREFIX,
+        local_device=EMBEDDING_LOCAL_DEVICE,
+        local_batch_size=EMBEDDING_LOCAL_BATCH_SIZE,
+        model_revision=EMBEDDING_MODEL_REVISION,
+        trust_remote_code=EMBEDDING_TRUST_REMOTE_CODE,
+    )
 
 
 def _timestamped_path(path: Path) -> Path:
@@ -107,7 +126,7 @@ def train_model_embeddings(
     texts, labels, tokens = _load_labeled_examples(labeled_json_path)
     logger.info("Fetching embeddings for %d examples (cached at %s)", len(texts), cache_path)
     pipeline = EmbeddingPipeline(
-        EmbeddingVectorizer(model=EMBEDDING_MODEL, cache_path=cache_path),
+        _embedding_vectorizer(cache_path),
         DenseLogisticRegression(max_iter=300, class_weight={LABEL_CHEAP_OK: 1.0, LABEL_ESCALATE: 1.3}),
     )
     return _train_with_pipeline(pipeline, texts, labels, tokens, Counter(labels), f"{MODEL_VERSION}-embeddings", model_output_path)
@@ -202,7 +221,7 @@ def train_model_lgbm_embeddings(
     texts, labels, tokens = _load_labeled_examples(labeled_json_path)
     logger.info("Fetching embeddings for %d examples (cached at %s)", len(texts), cache_path)
     pipeline = LightGBMEmbeddingPipeline(
-        EmbeddingVectorizer(model=EMBEDDING_MODEL, cache_path=cache_path),
+        _embedding_vectorizer(cache_path),
         class_weight={LABEL_CHEAP_OK: 1.0, LABEL_ESCALATE: 1.3},
     )
     return _train_with_pipeline(
@@ -227,7 +246,7 @@ def train_model_lgbm_embeddings_tuned(
     label_counts = Counter(labels)
 
     logger.info("Fetching embeddings for %d examples (cached at %s)", len(texts), cache_path)
-    vectorizer = EmbeddingVectorizer(model=EMBEDDING_MODEL, cache_path=cache_path)
+    vectorizer = _embedding_vectorizer(cache_path)
     X_all = np.array(vectorizer.fit_transform(texts), dtype=np.float32)
     y_all = np.array(labels)
 
@@ -338,7 +357,7 @@ def train_model_lgbm_embeddings_optuna(
     label_counts = Counter(labels)
 
     logger.info("Fetching embeddings for %d examples (cached at %s)", len(texts), cache_path)
-    vectorizer = EmbeddingVectorizer(model=EMBEDDING_MODEL, cache_path=cache_path)
+    vectorizer = _embedding_vectorizer(cache_path)
     X_all = np.array(vectorizer.fit_transform(texts), dtype=np.float32)
     y_all = np.array(labels)
 
@@ -464,7 +483,7 @@ def train_model_ensemble_embeddings(
     label_counts = Counter(labels)
 
     logger.info("Fetching embeddings for %d examples (cached at %s)", len(texts), cache_path)
-    vectorizer = EmbeddingVectorizer(model=EMBEDDING_MODEL, cache_path=cache_path)
+    vectorizer = _embedding_vectorizer(cache_path)
     X_all = np.array(vectorizer.fit_transform(texts), dtype=np.float32)
     y_all = np.array(labels)
 
@@ -626,7 +645,11 @@ def load_model(model_path: str | Path = DEFAULT_MODEL_PATH) -> Optional[Dict[str
     path = Path(model_path)
     if not path.exists():
         return None
-    return ml.load(path)
+    artifact = ml.load(path)
+    pipeline = artifact.get("pipeline")
+    if hasattr(pipeline, "prepare_for_inference"):
+        pipeline.prepare_for_inference()
+    return artifact
 
 
 def classify_from_artifact(

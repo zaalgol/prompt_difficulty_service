@@ -21,6 +21,7 @@ class ClassifyResponse(BaseModel):
     method: str
     reason: str
     features: Dict[str, Any]
+    elapsed_time_ms: float = Field(ge=0)
 
 
 class AnonymizeRequest(BaseModel):
@@ -57,6 +58,7 @@ class AnonymizeResponse(BaseModel):
     session_id: Optional[str]
     entities: List[AnonymizedEntity]
     preserved_entity_types: List[str]
+    elapsed_time_ms: float = Field(ge=0)
 
 
 class TrainRequest(BaseModel):

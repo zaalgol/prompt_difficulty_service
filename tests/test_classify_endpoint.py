@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 from app.main import app
 from app.config import LABEL_CHEAP_OK, LABEL_ESCALATE
+from app.presidio_service import AnonymizerService
 
 VALID_LABELS = {LABEL_CHEAP_OK, LABEL_ESCALATE}
 VALID_METHODS = {"trained_model", "rule_based_fallback"}
@@ -17,8 +18,14 @@ VALID_METHODS = {"trained_model", "rule_based_fallback"}
 
 @pytest.fixture(scope="module")
 def client():
-    with TestClient(app) as c:
-        yield c
+    # Response-contract tests use the rule fallback and skip heavyweight startup.
+    # Full model loading and dummy inference are covered by startup and E2E tests.
+    c = TestClient(app)
+    c.app.state.model_path = "test-model"
+    c.app.state.artifact = None
+    c.app.state.anonymizer_service = AnonymizerService()
+    yield c
+    c.close()
 
 
 def test_classify_returns_200(client):
@@ -35,6 +42,7 @@ def test_classify_response_has_required_fields(client):
     assert "method" in data
     assert "reason" in data
     assert "features" in data
+    assert "elapsed_time_ms" in data
 
 
 def test_classify_label_is_valid(client):
@@ -74,6 +82,13 @@ def test_classify_reason_is_string(client):
     data = response.json()
     assert isinstance(data["reason"], str)
     assert len(data["reason"]) > 0
+
+
+def test_classify_elapsed_time_is_non_negative_milliseconds(client):
+    data = client.post("/classify", json={"prompt": "What is 2+2?"}).json()
+
+    assert isinstance(data["elapsed_time_ms"], float)
+    assert data["elapsed_time_ms"] >= 0
 
 
 def test_classify_empty_prompt_returns_422(client):

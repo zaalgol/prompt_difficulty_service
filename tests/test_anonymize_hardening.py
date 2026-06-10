@@ -141,15 +141,25 @@ class _Recording:
         }
 
     def status(self):
-        return {"engines_loaded": False, "nlp_model": "test"}
+        return {
+            "engines_loaded": False,
+            "nlp_model": "test",
+            "vault_backend": "memory",
+        }
 
 
 @pytest.fixture
 def client():
     from app.main import app
 
-    with TestClient(app) as c:
-        yield c
+    # Endpoint/schema tests inject their own service and do not need application
+    # startup. Dedicated warmup and E2E tests cover the real lifespan.
+    c = TestClient(app)
+    c.app.state.model_path = "test-model"
+    c.app.state.artifact = None
+    c.app.state.anonymizer_service = _Recording()
+    yield c
+    c.close()
 
 
 @pytest.mark.parametrize("body", [
@@ -202,7 +212,5 @@ def test_health_reports_anonymizer_status(client):
     data = client.get("/health").json()
     assert "anonymizer" in data
     assert set(data["anonymizer"]) == {"engines_loaded", "nlp_model", "vault_backend"}
-    # Lazy by default: engines are not loaded just because the process is up.
     assert data["anonymizer"]["engines_loaded"] is False
-    # The configured vault backend is reported (in-memory by default).
     assert data["anonymizer"]["vault_backend"] == "memory"

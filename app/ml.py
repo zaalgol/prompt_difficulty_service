@@ -5,11 +5,12 @@ import os
 import pickle
 import random
 import re
+import threading
 import urllib.error
 import urllib.request
 from collections import Counter
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from app.logging_config import get_logger
 
@@ -484,13 +485,25 @@ class LightGBMEmbeddingPipeline:
     def predict_proba(self, texts: List[str], tokens: Optional[List[Any]] = None) -> List[List[float]]:
         return _lgbm_predict_proba(self._clf, self._matrix(self._vec.transform(texts), tokens)).tolist()
 
+    def prepare_for_inference(self) -> None:
+        self._vec.prepare_for_inference()
+
+    def warm_inference(self, prompt: str) -> bool:
+        return self._vec.warm_inference(
+            prompt,
+            lambda: (
+                self.predict([prompt], [None]),
+                self.predict_proba([prompt], [None]),
+            ),
+        )
+
 
 # ---------------------------------------------------------------------------
 # Embedding vectoriser (calls OpenAI-compatible API, caches to disk)
 # ---------------------------------------------------------------------------
 
 class EmbeddingVectorizer:
-    """Fetches embeddings from an OpenAI-compatible API and caches them."""
+    """Produces remote OpenAI or local SentenceTransformer embeddings."""
 
     # 8192 token limit; ~4 chars/token → 20 000 chars is safely under it
     MAX_CHARS = 20_000
@@ -506,30 +519,93 @@ class EmbeddingVectorizer:
         api_key: Optional[str] = None,
         cache_path: Optional["str | Path"] = None,
         base_url: str = "https://api.openai.com/v1",
+        provider: str = "openai",
+        task_prefix: str = "",
+        local_device: str = "cpu",
+        local_batch_size: int = 16,
+        model_revision: Optional[str] = None,
+        trust_remote_code: bool = False,
     ) -> None:
         self.model = model
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY", "")
         self.cache_path = Path(cache_path) if cache_path else None
         self.base_url = base_url.rstrip("/")
+        self.provider = provider.strip().lower()
+        if self.provider not in {"openai", "local"}:
+            raise ValueError(
+                f"Unsupported embedding provider {provider!r}; expected 'openai' or 'local'."
+            )
+        self.task_prefix = task_prefix
+        self.local_device = local_device
+        self.local_batch_size = max(1, int(local_batch_size))
+        self.model_revision = model_revision
+        self.trust_remote_code = bool(trust_remote_code)
+        self.persist_cache = True
         self.embedding_dim_: int = 0
         self._cache: Dict[str, List[float]] = {}
+        self._local_encoder = None
+        self._local_encoder_lock = threading.Lock()
+        self._cache_lock = threading.RLock()
 
         if self.cache_path and self.cache_path.exists():
             with open(self.cache_path, "rb") as f:
                 self._cache = pickle.load(f)
 
+    def __getstate__(self) -> Dict[str, Any]:
+        state = dict(self.__dict__)
+        # The model can be hundreds of MB and is already available from the
+        # Hugging Face cache. Persist only its identity, never the loaded object.
+        state["_local_encoder"] = None
+        state.pop("_local_encoder_lock", None)
+        state.pop("_cache_lock", None)
+        return state
+
+    def __setstate__(self, state: Dict[str, Any]) -> None:
+        provider = state.setdefault("provider", "openai")
+        state.setdefault("task_prefix", "")
+        state.setdefault("local_device", "cpu")
+        state.setdefault("local_batch_size", 16)
+        state.setdefault("model_revision", None)
+        # Local artifacts produced before this setting existed used remote code.
+        state.setdefault("trust_remote_code", provider == "local")
+        state.setdefault("persist_cache", True)
+        self.__dict__.update(state)
+        self._local_encoder = None
+        self._local_encoder_lock = threading.Lock()
+        self._cache_lock = threading.RLock()
+
     def _trunc(self, text: str) -> str:
         return text[: self.MAX_CHARS]
 
+    def _cache_key(self, text: str) -> str:
+        truncated = self._trunc(text)
+        if self.provider == "openai":
+            # Preserve compatibility with the existing on-disk OpenAI cache.
+            return truncated
+        revision = self.model_revision or "main"
+        return f"local:{self.model}:{revision}:{self.task_prefix}:{truncated}"
+
     def _save_cache(self) -> None:
-        if self.cache_path:
+        if self.persist_cache and self.cache_path:
             self.cache_path.parent.mkdir(parents=True, exist_ok=True)
             with open(self.cache_path, "wb") as f:
                 pickle.dump(self._cache, f, protocol=pickle.HIGHEST_PROTOCOL)
 
-    def _fetch(self, texts: List[str]) -> None:
-        """Fetch and cache any texts not already cached, in batches of 100."""
-        to_fetch = [t for t in texts if self._trunc(t) not in self._cache]
+    def prepare_for_inference(self) -> None:
+        """Keep repeat-request caching in memory without persisting user prompts."""
+        self.persist_cache = False
+
+    def _missing_texts(self, texts: List[str]) -> List[str]:
+        result: List[str] = []
+        seen = set()
+        for text in texts:
+            key = self._cache_key(text)
+            if key not in self._cache and key not in seen:
+                result.append(text)
+                seen.add(key)
+        return result
+
+    def _fetch_openai(self, to_fetch: List[str]) -> None:
         if not to_fetch:
             return
 
@@ -558,21 +634,102 @@ class EmbeddingVectorizer:
                 ) from exc
 
             for item in data["data"]:
-                self._cache[truncated[item["index"]]] = item["embedding"]
+                self._cache[self._cache_key(batch[item["index"]])] = item["embedding"]
 
             logger.info("Fetched embeddings %d/%d", i + len(batch), len(to_fetch))
 
-        self._save_cache()
+    def _load_local_encoder(self) -> Any:
+        encoder = self._local_encoder
+        if encoder is not None:
+            return encoder
+        with self._local_encoder_lock:
+            if self._local_encoder is None:
+                if self.trust_remote_code and not self.model_revision:
+                    raise RuntimeError(
+                        "Local embedding models using remote code require a pinned "
+                        "embedding_model_revision."
+                    )
+                try:
+                    from sentence_transformers import SentenceTransformer
+                except ImportError as exc:
+                    raise RuntimeError(
+                        "Local embeddings require sentence-transformers. "
+                        "Install the project requirements."
+                    ) from exc
+                logger.info(
+                    "Loading local embedding model '%s' on %s",
+                    self.model,
+                    self.local_device,
+                )
+                self._local_encoder = SentenceTransformer(
+                    self.model,
+                    device=self.local_device,
+                    trust_remote_code=self.trust_remote_code,
+                    revision=self.model_revision,
+                )
+        return self._local_encoder
+
+    def warmup(self) -> None:
+        """Load the local model before the service begins accepting requests."""
+        if self.provider == "local":
+            self._load_local_encoder()
+
+    def warm_inference(self, text: str, infer: Callable[[], Any]) -> bool:
+        """Warm a local inference path without retaining the synthetic prompt."""
+        if self.provider != "local":
+            return False
+
+        self.warmup()
+        key = self._cache_key(text)
+        with self._cache_lock:
+            had_cached_value = key in self._cache
+            cached_value = self._cache.pop(key, None)
+            try:
+                infer()
+            finally:
+                if had_cached_value:
+                    self._cache[key] = cached_value
+                else:
+                    self._cache.pop(key, None)
+        return True
+
+    def _fetch_local(self, to_fetch: List[str]) -> None:
+        if not to_fetch:
+            return
+        encoder = self._load_local_encoder()
+        inputs = [f"{self.task_prefix}{self._trunc(text)}" for text in to_fetch]
+        embeddings = encoder.encode(
+            inputs,
+            batch_size=self.local_batch_size,
+            show_progress_bar=False,
+            convert_to_numpy=True,
+            normalize_embeddings=True,
+        )
+        for text, embedding in zip(to_fetch, embeddings):
+            self._cache[self._cache_key(text)] = embedding.tolist()
+        logger.info("Generated %d local embeddings", len(to_fetch))
+
+    def _fetch(self, texts: List[str]) -> None:
+        """Generate and cache any texts not already cached."""
+        with self._cache_lock:
+            to_fetch = self._missing_texts(texts)
+            if not to_fetch:
+                return
+            if self.provider == "local":
+                self._fetch_local(to_fetch)
+            else:
+                self._fetch_openai(to_fetch)
+            self._save_cache()
 
     def fit(self, texts: List[str]) -> "EmbeddingVectorizer":
         self._fetch(texts)
         if texts:
-            self.embedding_dim_ = len(self._cache[self._trunc(texts[0])])
+            self.embedding_dim_ = len(self._cache[self._cache_key(texts[0])])
         return self
 
     def transform(self, texts: List[str]) -> List[List[float]]:
         self._fetch(texts)
-        return [self._cache[self._trunc(t)] for t in texts]
+        return [self._cache[self._cache_key(t)] for t in texts]
 
     def fit_transform(self, texts: List[str]) -> List[List[float]]:
         self.fit(texts)
@@ -710,6 +867,18 @@ class EmbeddingPipeline:
     def predict_proba(self, texts: List[str], tokens: Optional[List[Any]] = None) -> List[List[float]]:
         return self._clf.predict_proba(self._features(self._vec.transform(texts), tokens))
 
+    def prepare_for_inference(self) -> None:
+        self._vec.prepare_for_inference()
+
+    def warm_inference(self, prompt: str) -> bool:
+        return self._vec.warm_inference(
+            prompt,
+            lambda: (
+                self.predict([prompt], [None]),
+                self.predict_proba([prompt], [None]),
+            ),
+        )
+
 
 class TunedEmbeddingPipeline:
     """EmbeddingVectorizer + any sklearn-compatible classifier; picklable."""
@@ -738,6 +907,18 @@ class TunedEmbeddingPipeline:
 
     def predict_proba(self, texts: List[str], tokens: Optional[List[Any]] = None) -> List[List[float]]:
         return _lgbm_predict_proba(self._clf, self._matrix(texts, tokens)).tolist()
+
+    def prepare_for_inference(self) -> None:
+        self._vec.prepare_for_inference()
+
+    def warm_inference(self, prompt: str) -> bool:
+        return self._vec.warm_inference(
+            prompt,
+            lambda: (
+                self.predict([prompt], [None]),
+                self.predict_proba([prompt], [None]),
+            ),
+        )
 
 
 class EnsembleEmbeddingPipeline:
@@ -769,3 +950,15 @@ class EnsembleEmbeddingPipeline:
         import numpy as np
         avg = np.array(self.predict_proba(texts, tokens))
         return [self.classes_[int(i)] for i in np.argmax(avg, axis=1)]
+
+    def prepare_for_inference(self) -> None:
+        self._vec.prepare_for_inference()
+
+    def warm_inference(self, prompt: str) -> bool:
+        return self._vec.warm_inference(
+            prompt,
+            lambda: (
+                self.predict([prompt], [None]),
+                self.predict_proba([prompt], [None]),
+            ),
+        )

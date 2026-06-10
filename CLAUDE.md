@@ -109,13 +109,17 @@ data/report_labeled_binary.json
 ```
 
 Default training variant (no flag to `scripts/train_model.py`): **Embeddings +
-LogReg**. It requires `OPENAI_API_KEY` — both to train and, on an embedding
-artifact, to run the service (embedding inference calls the API per prompt; a
-missing key fails closed to `escalate`). Use `--use-tfidf` for the key-free
-TF-IDF + LogReg legacy baseline. Every training run is non-destructive — it writes
-a new artifact into the `models/` folder with a UTC timestamp prefix on the
-filename (e.g. `models/2026-06-08T08-11-03Z__prompt_classifier_embeddings.joblib`),
-never overwriting the previous one.
+LogReg**. `embedding_provider` in `service_config.json` selects `"local"`
+(`nomic-ai/nomic-embed-text-v1.5` via SentenceTransformers) or `"openai"`
+(`text-embedding-3-small`, requiring `OPENAI_API_KEY`). Provider and model settings
+are serialized into the artifact, so changing them requires retraining. Use
+`--use-tfidf` for the key-free TF-IDF + LogReg baseline. Every training run is
+non-destructive and writes a UTC-timestamped artifact under `models/`.
+
+Local models that set `embedding_trust_remote_code: true` must also pin
+`embedding_model_revision`. Training may persist embeddings to the disk cache;
+loading an artifact for API or CLI inference automatically switches that cache to
+memory-only so served prompts are not written to disk.
 
 Legacy TF-IDF + LogReg artifact path:
 
@@ -129,6 +133,11 @@ fresh clone — where `models/` is gitignored and empty — runs rule-based unti
 model is trained and `model_path` is updated. This keeps `pip install` + run
 working with no API key. The CLI (`scripts/classify_prompt.py`) resolves the same
 path via `app.config.resolve_model_path`, so CLI and API select the same artifact.
+
+`run_classify_dummy_on_startup` and `run_anonymize_dummy_on_startup` independently
+control synthetic startup requests; both default to true. They initialize the
+complete classifier and Presidio/Faker paths without persisting dummy cache or
+vault state. Setting a flag false restores lazy initialization for that endpoint.
 
 ## Labels
 

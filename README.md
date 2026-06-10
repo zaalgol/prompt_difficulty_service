@@ -23,8 +23,8 @@ dataset, and no model file**:
 `data/`, `models/`, and `logs/` are gitignored, so datasets and trained model
 artifacts are **not** part of a clone. Training a model is an optional upgrade
 (see [Train a model](#train-a-model-from-cli)): the key-free TF-IDF variant needs
-nothing extra, while the embedding variants additionally require `OPENAI_API_KEY`
-at runtime (see [Active model](#active-model)).
+nothing extra. Embedding variants can use either a local Nomic model or the
+OpenAI embeddings API.
 
 ## Install
 
@@ -47,6 +47,20 @@ pip install -r requirements.txt
 The `/anonymize` endpoint uses a spaCy English model (`en_core_web_lg`) for
 Presidio's NER. It is pinned in `requirements.txt`, so the `pip install` above
 already pulls it — there is **no** separate `spacy download` step.
+
+Two flags control startup dummy requests and both default to `true`:
+
+```json
+{
+  "run_classify_dummy_on_startup": true,
+  "run_anonymize_dummy_on_startup": true
+}
+```
+
+The classification dummy initializes the local embedding model and ensemble. The
+anonymization dummy initializes spaCy, Presidio, the custom sensitive-data
+recognizer, and Faker. Both requests are non-persistent. Set either flag to
+`false` to restore lazy initialization for that endpoint and reduce startup time.
 
 If `pip install` fails on the `en_core_web_lg` line with a GitHub `504 Gateway
 Time-out`, that is a transient server-side error, not a broken setup — pip
@@ -141,19 +155,56 @@ Other variants (pass one flag):
 | `--use-ensemble-embeddings` | Embeddings + LGBM + XGBoost + CatBoost |
 | `--compare` | Train all 7 variants and print a comparison table |
 
-Embedding variants require `OPENAI_API_KEY` to be set. Because the default training
-variant is an embeddings model, the no-flag command needs that key too; use
-`--use-tfidf` for a key-free run.
+### Embedding provider
 
-`OPENAI_API_KEY` is needed both to **train** an embedding variant **and to run the
-service on one** — embedding inference calls the OpenAI API for each new prompt. If
-the key or network is missing at request time, `/classify` fails closed and returns
-`escalate` with `method: "fail_closed"` (no HTTP error is raised). The TF-IDF
-variant (`--use-tfidf`) is fully local and never calls out.
+Embedding training uses `embedding_provider` from `service_config.json`. The
+recommended low-latency configuration is:
 
-Set the key with `$env:OPENAI_API_KEY = "sk-..."` (PowerShell) or
-`export OPENAI_API_KEY=sk-...` (bash/zsh) in the same terminal before training or
-starting the server.
+```json
+{
+  "embedding_provider": "local",
+  "embedding_model": "nomic-ai/nomic-embed-text-v1.5",
+  "embedding_model_revision": "e9b6763023c676ca8431644204f50c2b100d9aab",
+  "embedding_trust_remote_code": true,
+  "embedding_task_prefix": "classification: ",
+  "embedding_local_device": "cpu",
+  "embedding_local_batch_size": 16
+}
+```
+
+The local provider uses SentenceTransformers and never calls OpenAI. Model weights
+are downloaded from Hugging Face on first use and then reused from its local
+cache. The service loads the local encoder during startup so request latency does
+not include model loading. When `run_classify_dummy_on_startup` is true, it also
+classifies a non-persistent dummy prompt before reporting ready, which initializes
+PyTorch and all ensemble inference paths instead of charging that one-time cost
+to the first caller. Expect the first
+installation/startup to take longer while the weights download; later startups
+load them from disk. CPU inference was about 0.3 seconds per short prompt on the
+development Windows machine, but measure on the deployment hardware.
+
+Nomic requires custom Hugging Face model code, so
+`embedding_trust_remote_code` is explicitly enabled and the model revision is
+pinned to a commit. The service refuses to execute trusted remote code without a
+pinned revision.
+
+Changing provider settings does not convert an existing artifact: different
+embedding models produce incompatible vector spaces. Retrain the chosen embedding
+variant and point `model_path` at the newly generated artifact. Local and OpenAI
+vectors can safely share the cache because local entries include the model and
+task prefix in their cache key.
+
+The disk embedding cache is used while training. When an artifact is loaded for
+classification, persistence is disabled automatically: repeat prompts may be
+cached in process memory, but raw served prompts are not appended to
+`data/embeddings_cache.pkl`.
+
+To retain OpenAI embeddings, set `"embedding_provider": "openai"` and
+`"embedding_model": "text-embedding-3-small"`. That provider requires
+`OPENAI_API_KEY` during both training and runtime. Set it with
+`$env:OPENAI_API_KEY = "sk-..."` (PowerShell) or
+`export OPENAI_API_KEY=sk-...` (bash/zsh). Missing credentials or network access
+fail closed to `escalate`. The `--use-tfidf` variant is also fully local.
 
 ## Classify a prompt
 
@@ -201,6 +252,10 @@ curl -X POST http://localhost:8081/classify \
   -d '{"prompt": "Refactor this auth flow", "total_input_tokens": 45000}'
 ```
 
+Successful `/classify` responses include `elapsed_time_ms`, the server-side time
+spent processing the endpoint. It does not include network transfer or client-side
+JSON parsing.
+
 ## Classify from CLI (no server needed)
 
 ```bash
@@ -240,6 +295,7 @@ side. It gives two guarantees:
 | `session_id` | Echoes the request `session_id` (or `null`). |
 | `entities` | One entry per detected entity: `entity_type`, character `start`/`end` in `anonymized_prompt`, and `action` (`anonymized` or `preserved`). |
 | `preserved_entity_types` | Entity types kept unchanged for this request. |
+| `elapsed_time_ms` | Server-side endpoint processing time in milliseconds. |
 
 The **original PII values are never returned or logged** — they stay server-side.
 
@@ -269,7 +325,8 @@ Response (fake values are random — only their *consistency* is guaranteed):
   "entities": [
     {"entity_type": "EMAIL_ADDRESS", "start": 12, "end": 33, "action": "anonymized"}
   ],
-  "preserved_entity_types": []
+  "preserved_entity_types": [],
+  "elapsed_time_ms": 18.427
 }
 ```
 
@@ -394,14 +451,14 @@ Anonymizer vault and readiness notes:
   logged — and each entity type keeps at most `presidio_max_entries_per_type`
   mappings. Requests **without** a `session_id` never use the vault.
 - `/health` reports anonymizer readiness under `anonymizer.engines_loaded` and the
-  active backend under `anonymizer.vault_backend`. Engines load lazily on first
-  `/anonymize`; set `"presidio_warm_on_startup": true` in `service_config.json` to
-  load them at startup instead.
+  active backend under `anonymizer.vault_backend`. With
+  `run_anonymize_dummy_on_startup: true`, engines are initialized before readiness;
+  with `false`, they load lazily on the first `/anonymize`.
 
 Tunable in `service_config.json`: `presidio_nlp_model`, `presidio_score_threshold`,
 `vault_backend`, `presidio_max_sessions`, `redis_url`, `redis_socket_timeout`,
 `presidio_session_ttl_seconds`, `presidio_max_entries_per_type`,
-`presidio_warm_on_startup`.
+`run_classify_dummy_on_startup`, `run_anonymize_dummy_on_startup`.
 
 ## Logging
 

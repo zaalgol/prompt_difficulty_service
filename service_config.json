@@ -1,6 +1,15 @@
 {
-  "model_path": "models/2026-06-08T18-57-24Z__prompt_classifier_ensemble_embeddings.joblib",
+  "model_path": "models/2026-06-09T21-05-16Z__prompt_classifier_ensemble_embeddings.joblib",
+  "embedding_provider": "local",
+  "embedding_model": "nomic-ai/nomic-embed-text-v1.5",
+  "embedding_model_revision": "e9b6763023c676ca8431644204f50c2b100d9aab",
+  "embedding_trust_remote_code": true,
+  "embedding_task_prefix": "classification: ",
+  "embedding_local_device": "cpu",
+  "embedding_local_batch_size": 16,
+  "run_classify_dummy_on_startup": true,
+  "run_anonymize_dummy_on_startup": true,
   "log_level": "INFO",
-  "min_cheap_confidence": 0.8,
+  "min_cheap_confidence": 0.85,
   "vault_backend": "memory"
 }

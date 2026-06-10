@@ -8,6 +8,12 @@ lightgbm
 optuna
 catboost
 xgboost
+# Local embedding backend (nomic-ai/nomic-embed-text-v1.5). The model weights
+# are downloaded once from Hugging Face and then reused from its local cache.
+sentence-transformers==5.5.1
+# Required by Nomic's custom model implementation.
+einops==0.8.2
+torch==2.12.0
 pytest
 httpx
 # Optional Redis backend for the /anonymize per-session consistency vault

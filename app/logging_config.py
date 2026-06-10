@@ -68,8 +68,13 @@ def setup_logging(level: "str | int | None" = None) -> None:
     root.handlers = [console_handler, file_handler]
 
     # Dampen chatty third-party loggers so our own logs stay readable.
-    for noisy in ("httpx", "httpcore", "urllib3"):
+    for noisy in ("httpx", "httpcore", "urllib3", "sentence_transformers"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
+    # Presidio emits one warning per recognizer for unsupported languages while
+    # constructing an English-only registry. These are expected and can flood
+    # process supervisors during eager startup warmup.
+    for noisy in ("presidio-analyzer", "presidio-anonymizer"):
+        logging.getLogger(noisy).setLevel(logging.ERROR)
 
     _configured = True
 

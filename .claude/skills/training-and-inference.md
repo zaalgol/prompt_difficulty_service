@@ -28,8 +28,16 @@ artifacts are never overwritten.
 | `--use-ensemble-embeddings` | Embeddings + LGBM + XGBoost + CatBoost | `models/prompt_classifier_ensemble_embeddings.joblib` |
 | `--compare` | Train all 7 and print comparison table | all of the above |
 
-Embedding variants require `OPENAI_API_KEY` to be set — including the no-flag
-default. Use `--use-tfidf` for a key-free run.
+Embedding variants use `embedding_provider` from `service_config.json`. Use
+`"local"` with `nomic-ai/nomic-embed-text-v1.5` for local inference, or
+`"openai"` with `text-embedding-3-small` and `OPENAI_API_KEY`. The provider and
+model are serialized into the artifact, so changing providers requires retraining.
+Use `--use-tfidf` for a lightweight key-free run.
+
+For models requiring Hugging Face custom code, set
+`embedding_trust_remote_code: true` together with a pinned
+`embedding_model_revision`. Serving disables disk cache persistence automatically;
+only training writes new embeddings to `data/embeddings_cache.pkl`.
 
 ## Main metric
 

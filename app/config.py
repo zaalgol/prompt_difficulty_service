@@ -55,9 +55,32 @@ def resolve_model_path(cfg: dict | None = None) -> Path:
     path = Path(raw)
     return path if path.is_absolute() else PROJECT_ROOT / path
 
-# Embedding model used when training embedding-based variants. Override with
-# "embedding_model" in service_config.json.
-EMBEDDING_MODEL = _SERVICE_CONFIG.get("embedding_model", "text-embedding-3-small")
+# Embedding backend used when training embedding-based variants. The provider is
+# serialized into the trained artifact, so changing service_config.json does not
+# silently change the vector space of an existing model.
+EMBEDDING_PROVIDER = str(
+    _SERVICE_CONFIG.get("embedding_provider", "openai")
+).strip().lower()
+_DEFAULT_EMBEDDING_MODEL = (
+    "nomic-ai/nomic-embed-text-v1.5"
+    if EMBEDDING_PROVIDER == "local"
+    else "text-embedding-3-small"
+)
+EMBEDDING_MODEL = _SERVICE_CONFIG.get("embedding_model", _DEFAULT_EMBEDDING_MODEL)
+EMBEDDING_MODEL_REVISION = _SERVICE_CONFIG.get("embedding_model_revision")
+EMBEDDING_TRUST_REMOTE_CODE = bool(
+    _SERVICE_CONFIG.get("embedding_trust_remote_code", False)
+)
+# Nomic was trained with task prefixes. "classification: " is the appropriate
+# prefix for this service and becomes part of the cache namespace.
+EMBEDDING_TASK_PREFIX = _SERVICE_CONFIG.get(
+    "embedding_task_prefix",
+    "classification: " if EMBEDDING_PROVIDER == "local" else "",
+)
+EMBEDDING_LOCAL_DEVICE = _SERVICE_CONFIG.get("embedding_local_device", "cpu")
+EMBEDDING_LOCAL_BATCH_SIZE = int(
+    _SERVICE_CONFIG.get("embedding_local_batch_size", 16)
+)
 
 LABEL_CHEAP_OK = "cheap_ok"
 LABEL_ESCALATE = "escalate"
@@ -102,7 +125,17 @@ PRESIDIO_SESSION_TTL_SECONDS = int(_SERVICE_CONFIG.get("presidio_session_ttl_sec
 # (FIFO eviction, enforced by the operator).
 PRESIDIO_MAX_ENTRIES_PER_TYPE = int(_SERVICE_CONFIG.get("presidio_max_entries_per_type", 5000))
 
-# Load the (heavy) spaCy/Presidio engines at startup instead of on first request.
-# Off by default so a classify-only deployment starts fast; turn on where the
-# service must be "ready" only once anonymization can actually run.
-PRESIDIO_WARM_ON_STARTUP = bool(_SERVICE_CONFIG.get("presidio_warm_on_startup", False))
+# Move one-time model initialization into startup by running complete synthetic
+# requests. Both default to enabled; disable either independently in
+# service_config.json when faster startup matters more than first-request latency.
+RUN_CLASSIFY_DUMMY_ON_STARTUP = bool(
+    _SERVICE_CONFIG.get("run_classify_dummy_on_startup", True)
+)
+RUN_ANONYMIZE_DUMMY_ON_STARTUP = bool(
+    _SERVICE_CONFIG.get(
+        "run_anonymize_dummy_on_startup",
+        # Compatibility with configurations created before the two independent
+        # dummy-request flags were introduced.
+        _SERVICE_CONFIG.get("presidio_warm_on_startup", True),
+    )
+)

@@ -38,8 +38,13 @@ class RecordingAnonymizer:
 
 @pytest.fixture
 def client():
-    with TestClient(app) as test_client:
-        yield test_client
+    # These are endpoint contract tests with an injected fake service. Do not
+    # run application lifespan: loading Nomic and Presidio for every
+    # parameterized validation case would test startup repeatedly, not the API.
+    test_client = TestClient(app)
+    test_client.app.state.anonymizer_service = RecordingAnonymizer()
+    yield test_client
+    test_client.close()
 
 
 def _install(client, service):
@@ -80,6 +85,17 @@ def test_endpoint_applies_documented_defaults(client):
     assert fake.calls[0]["session_id"] is None
     assert fake.calls[0]["preserve_entity_types"] == []
     assert fake.calls[0]["auto_preserve"] is True
+
+
+def test_response_includes_non_negative_elapsed_time(client):
+    _install(client, RecordingAnonymizer())
+
+    data = client.post(
+        "/anonymize", json={"prompt": "Contact John Smith."}
+    ).json()
+
+    assert isinstance(data["elapsed_time_ms"], float)
+    assert data["elapsed_time_ms"] >= 0
 
 
 def test_response_model_drops_unexpected_sensitive_fields(client):
@@ -163,4 +179,3 @@ def test_internal_failure_returns_sanitized_500(client):
     assert response.status_code == 500
     assert response.json() == {"detail": "Anonymization failed."}
     assert "John Smith leaked here" not in response.text
-

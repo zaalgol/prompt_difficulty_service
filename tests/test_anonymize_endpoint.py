@@ -14,12 +14,19 @@ pytest.importorskip("presidio_anonymizer")
 pytest.importorskip("faker")
 
 from app.main import app
+from app.presidio_service import AnonymizerService
 
 
 @pytest.fixture(scope="module")
 def client():
-    with TestClient(app) as c:
-        yield c
+    # Exercise the real anonymizer once per module without also loading the local
+    # classifier. Full application startup is covered by the E2E suites.
+    c = TestClient(app)
+    c.app.state.model_path = "test-model"
+    c.app.state.artifact = None
+    c.app.state.anonymizer_service = AnonymizerService()
+    yield c
+    c.close()
 
 
 def _anonymize(client, prompt, **kwargs):
@@ -34,6 +41,8 @@ def test_anonymize_returns_200_and_shape(client):
     assert isinstance(data["anonymized_prompt"], str)
     assert isinstance(data["entities"], list)
     assert data["preserved_entity_types"] == []
+    assert isinstance(data["elapsed_time_ms"], float)
+    assert data["elapsed_time_ms"] >= 0
     for ent in data["entities"]:
         assert set(ent) == {"entity_type", "start", "end", "action"}
 
